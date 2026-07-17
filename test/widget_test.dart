@@ -1,30 +1,61 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:switchmoney/api_client.dart';
+import 'package:switchmoney/home_page.dart';
 import 'package:switchmoney/main.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
+  setUp(() {
+    // le singleton ApiClient garde son état entre deux tests
+    ApiClient.instance.resetForTests();
+  });
+
+  testWidgets('Sans session, l\'app affiche l\'écran de connexion',
+      (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues({});
+
     await tester.pumpWidget(const MyApp());
+    await tester.pumpAndSettle();
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    expect(find.text('SwitchMoney'), findsOneWidget);
+    expect(find.text('Se connecter'), findsOneWidget);
+    expect(find.text('Numéro de téléphone (avec indicatif)'), findsOneWidget);
+  });
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+  testWidgets('Avec une session stockée, l\'app ouvre le flux de transfert',
+      (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues({
+      'auth_token_v1': 'jeton-test',
+      'auth_user_v1':
+          '{"id":1,"phone":"22951469075","name":"Test User","email":null}',
+    });
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    await tester.pumpWidget(const MyApp());
+    // pump borné (pas de pumpAndSettle : fetchMe() tourne en arrière-plan)
+    await tester.pump(const Duration(milliseconds: 600));
+
+    expect(find.text('Transfert'), findsWidgets);
+    expect(find.text('Continuer'), findsOneWidget);
+    expect(find.text('MTN BJ'), findsWidgets);
+  });
+
+  testWidgets('Le flux de transfert rend les roues d\'opérateurs',
+      (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues({});
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HomePage(
+          themeMode: ThemeMode.dark,
+          onThemeChange: (_) {},
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 600));
+
+    expect(find.text('Continuer'), findsOneWidget);
+    expect(find.text('MTN BJ'), findsWidgets);
   });
 }

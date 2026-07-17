@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: switchmoney-backend
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: PAWA_TOKEN
+        sync: false
+      - key: PAWA_BASE
+        value: https://api.sandbox.pawapay.io/v2
+      - key: CALLBACK_SECRET
+        sync: false
+      - key: AUTH_SECRET
+        sync: false
+      - key: FEE_RECIPIENT
+        sync: false
+      - key: ENABLE_SIMULATE
+        value: "false"
+      - key: VERIFY_CALLBACK_SIGNATURE
+        value: "false"
+      # PORT n'est pas défini ici : Render l'injecte automatiquement et
+      # server.js le lit déjà via process.env.PORT.

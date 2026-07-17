@@ -43,3 +43,20 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# SwitchMoney backend — dépendances installées par npm (Render fait son
+# propre `npm install` sur Linux ; les binaires natifs commités ici sont
+# compilés pour Windows et planteraient sur le serveur)
+backend/node_modules/
+
+# SwitchMoney backend — secrets (jamais commités ; configurés dans Render)
+backend/.env
+
+# SwitchMoney backend — bases de données runtime (comptes, transactions,
+# bénéficiaires) : régénérées au démarrage, jamais commitées
+backend/switchmoney.db
+backend/switchmoney.db-shm
+backend/switchmoney.db-wal
+backend/recipients.db
+backend/recipients.db-shm
+backend/recipients.db-wal
