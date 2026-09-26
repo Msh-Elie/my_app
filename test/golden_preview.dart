@@ -13,6 +13,7 @@ import 'package:switchmoney/login_page.dart';
 import 'package:switchmoney/menu_page.dart';
 import 'package:switchmoney/settings_page.dart';
 import 'package:switchmoney/theme.dart';
+import 'package:switchmoney/ui_kit.dart';
 
 /// Historique de démonstration : couvre les opérateurs avec logo, ceux sans,
 /// et les trois statuts — c'est ce qui fait ressortir les défauts de rendu.
@@ -119,6 +120,137 @@ void main() {
     await expectLater(find.byType(MaterialApp),
         matchesGoldenFile('previews/transfert-confirmation-sombre.png'));
   });
+  testWidgets('selecteur-operateurs-clair', (tester) async {
+    await _pumpOperatorPicker(tester, AppTheme.light());
+    await expectLater(find.byType(MaterialApp),
+        matchesGoldenFile('previews/selecteur-operateurs-clair.png'));
+  });
+
+  testWidgets('selecteur-operateurs-sombre', (tester) async {
+    await _pumpOperatorPicker(tester, AppTheme.dark());
+    await expectLater(find.byType(MaterialApp),
+        matchesGoldenFile('previews/selecteur-operateurs-sombre.png'));
+  });
+  for (final entry in {
+    'clair': AppTheme.light(),
+    'sombre': AppTheme.dark(),
+  }.entries) {
+    testWidgets('composants-${entry.key}', (tester) async {
+      tester.view.physicalSize = const Size(1080, 1800);
+      tester.view.devicePixelRatio = 3.0;
+      addTearDown(tester.view.reset);
+
+      await tester.pumpWidget(MaterialApp(
+        theme: entry.value,
+        home: const _ComponentSheet(),
+      ));
+      // Laisse la coche finir de se tracer avant la capture.
+      await tester.pump(const Duration(milliseconds: 1200));
+
+      await expectLater(find.byType(MaterialApp),
+          matchesGoldenFile('previews/composants-${entry.key}.png'));
+    });
+  }
+}
+
+/// Planche des composants du systeme de design.
+class _ComponentSheet extends StatelessWidget {
+  const _ComponentSheet();
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return Scaffold(
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.xl),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const BrandMark(size: 46),
+              const SizedBox(height: AppSpacing.xl),
+              Row(
+                children: [
+                  AnimatedCheck(
+                      size: 76, color: c.success, background: c.successSurface),
+                  const SizedBox(width: AppSpacing.lg),
+                  const Expanded(
+                    child: Wrap(
+                      spacing: AppSpacing.sm,
+                      runSpacing: AppSpacing.sm,
+                      children: [
+                        StatusPill(
+                            label: 'Valide',
+                            tone: Tone.success,
+                            icon: Icons.check_rounded),
+                        StatusPill(
+                            label: 'En cours',
+                            tone: Tone.warning,
+                            icon: Icons.schedule_rounded),
+                        StatusPill(
+                            label: 'Echec',
+                            tone: Tone.danger,
+                            icon: Icons.close_rounded),
+                        StatusPill(label: 'Neutre'),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.xl),
+              const InfoBanner(message: 'Encart d\'information de reference.'),
+              const SizedBox(height: AppSpacing.lg),
+              AppCard(
+                child: Column(
+                  children: [
+                    DetailRow(label: 'Montant envoye', value: '25000 XOF'),
+                    DetailRow(label: 'Frais', value: '500 XOF'),
+                    Divider(height: AppSpacing.xl, color: c.border),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text('Le beneficiaire recoit',
+                              style: context.text.titleSmall),
+                        ),
+                        AnimatedAmount(
+                          value: 24500,
+                          currency: 'XOF',
+                          style: context.text.titleLarge
+                              ?.copyWith(color: c.brandText),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: AppSpacing.xl),
+              const StepProgress(currentStep: 2, totalSteps: 4, labels: [
+                'Operateurs',
+                'Numeros',
+                'Montant',
+                'Verification',
+              ]),
+              const SizedBox(height: AppSpacing.xl),
+              const PrimaryButton(label: 'Bouton principal'),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Ouvre la feuille de choix d'operateur depuis la premiere etape.
+Future<void> _pumpOperatorPicker(WidgetTester tester, ThemeData theme) async {
+  tester.view.physicalSize = const Size(1080, 2160);
+  tester.view.devicePixelRatio = 3.0;
+  addTearDown(tester.view.reset);
+
+  await tester.pumpWidget(MaterialApp(theme: theme, home: const HomePage()));
+  await _settleImages(tester);
+
+  await tester.tap(find.text('DEPUIS'));
+  await tester.pumpAndSettle();
 }
 
 /// Déroule le tunnel de transfert jusqu'à l'étape demandée.

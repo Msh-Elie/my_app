@@ -29,12 +29,13 @@ flutter:
   uses-material-design: true
   assets:
     - assets/icon.png
-    - assets/underline.png
+    - assets/icon_foreground.png
     - assets/logos/
 
 flutter_launcher_icons:
   android: true
   ios: true
   image_path: "assets/icon.png"
-  adaptive_icon_background: "#000000"
-  adaptive_icon_foreground: "assets/icon.png"
+  remove_alpha_ios: true
+  adaptive_icon_background: "#FE6F0B"
+  adaptive_icon_foreground: "assets/icon_foreground.png"

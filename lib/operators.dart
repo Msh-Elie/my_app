@@ -34,6 +34,52 @@ String operatorCountry(String label) {
   return '';
 }
 
+/// Code pays → nom du pays. Sert à regrouper les opérateurs dans le
+/// sélecteur : « MTN BJ » et « MOOV BJ » se rangent sous « Bénin ».
+const Map<String, String> _countryNames = {
+  'BJ': 'Bénin',
+  'BF': 'Burkina Faso',
+  'CM': 'Cameroun',
+  'CG': 'Congo',
+  'CD': 'RD Congo',
+  'CI': 'Côte d\'Ivoire',
+  'GA': 'Gabon',
+  'GH': 'Ghana',
+  'GN': 'Guinée',
+  'KE': 'Kenya',
+  'MA': 'Maroc',
+  'ML': 'Mali',
+  'NE': 'Niger',
+  'NG': 'Nigeria',
+  'SN': 'Sénégal',
+  'TG': 'Togo',
+  'ZA': 'Afrique du Sud',
+};
+
+/// Nom du pays d'un opérateur, ou son code si le pays est inconnu.
+String operatorCountryName(String label) {
+  final code = operatorCountry(label);
+  return _countryNames[code] ?? (code.isEmpty ? 'Autres' : code);
+}
+
+const _accented = 'àâäáãåçéèêëíìîïñóòôöõúùûüýÿœæ';
+const _plain = 'aaaaaaceeeeiiiinooooouuuuyyoa';
+
+/// Remplace les caractères accentués par leur équivalent simple.
+///
+/// Sert au tri et à la recherche : sans ce repli, « Bénin » se classerait
+/// après « Burkina Faso », parce que 'é' vaut 233 quand 'u' ne vaut que 117.
+String foldAccents(String value) {
+  final lower = value.toLowerCase();
+  final buffer = StringBuffer();
+  for (final rune in lower.runes) {
+    final char = String.fromCharCode(rune);
+    final index = _accented.indexOf(char);
+    buffer.write(index >= 0 ? _plain[index] : char);
+  }
+  return buffer.toString();
+}
+
 /// Marque → fichier de logo. La clé est la marque exacte renvoyée par
 /// [operatorBrand] ; « OM » désigne Orange Money.
 const Map<String, String> _brandLogos = {

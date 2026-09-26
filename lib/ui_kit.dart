@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import 'theme.dart';
@@ -410,6 +412,225 @@ class PageHeading extends StatelessWidget {
   }
 }
 
+/// Coche de validation qui se trace sous les yeux de l'utilisateur.
+///
+/// Un transfert validé est le moment qui compte : le cercle se referme, puis
+/// la coche s'écrit. Le mouvement dure moins d'une seconde et ne se répète
+/// pas — il marque l'instant sans faire attendre.
+class AnimatedCheck extends StatefulWidget {
+  final double size;
+  final Color color;
+  final Color background;
+
+  const AnimatedCheck({
+    super.key,
+    required this.size,
+    required this.color,
+    required this.background,
+  });
+
+  @override
+  State<AnimatedCheck> createState() => _AnimatedCheckState();
+}
+
+class _AnimatedCheckState extends State<AnimatedCheck>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..forward();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) => CustomPaint(
+        size: Size.square(widget.size),
+        painter: _CheckPainter(
+          progress: _controller.value,
+          color: widget.color,
+          background: widget.background,
+        ),
+      ),
+    );
+  }
+}
+
+class _CheckPainter extends CustomPainter {
+  final double progress;
+  final Color color;
+  final Color background;
+
+  const _CheckPainter({
+    required this.progress,
+    required this.color,
+    required this.background,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.shortestSide;
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = s / 2;
+
+    canvas.drawCircle(center, radius, Paint()..color = background);
+
+    final stroke = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.075
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    // Phase 1 — l'anneau se referme.
+    final ringProgress = Curves.easeOutCubic.transform(
+      (progress / 0.55).clamp(0.0, 1.0),
+    );
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius - stroke.strokeWidth / 2),
+      -math.pi / 2,
+      2 * math.pi * ringProgress,
+      false,
+      stroke,
+    );
+
+    // Phase 2 — la coche s'écrit, en partant du creux vers la pointe haute.
+    final checkProgress = Curves.easeOutCubic.transform(
+      ((progress - 0.45) / 0.55).clamp(0.0, 1.0),
+    );
+    if (checkProgress <= 0) return;
+
+    final path = Path()
+      ..moveTo(center.dx - s * 0.20, center.dy + s * 0.01)
+      ..lineTo(center.dx - s * 0.05, center.dy + s * 0.15)
+      ..lineTo(center.dx + s * 0.21, center.dy - s * 0.14);
+
+    // PathMetrics permet de n'extraire que la portion déjà « écrite ».
+    for (final metric in path.computeMetrics()) {
+      canvas.drawPath(
+        metric.extractPath(0, metric.length * checkProgress),
+        stroke,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_CheckPainter oldDelegate) =>
+      oldDelegate.progress != progress ||
+      oldDelegate.color != color ||
+      oldDelegate.background != background;
+}
+
+/// Montant dont la valeur glisse d'un chiffre à l'autre.
+///
+/// Quand les frais changent le net à recevoir, un saut brutal se remarque à
+/// peine ; un défilement rapide attire l'œil sur ce qui vient de bouger.
+class AnimatedAmount extends StatelessWidget {
+  final double value;
+  final String currency;
+  final TextStyle? style;
+
+  const AnimatedAmount({
+    super.key,
+    required this.value,
+    required this.currency,
+    this.style,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: value, end: value),
+      duration: const Duration(milliseconds: 420),
+      curve: Curves.easeOutCubic,
+      builder: (context, animated, _) => Text(
+        '${formatThousands(animated.round().toString())}$noBreakSpace$currency',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: (style ?? context.text.titleLarge)
+            ?.copyWith(fontFeatures: kTabularFigures),
+      ),
+    );
+  }
+}
+
+/// Dessine le symbole de la marque : deux flèches horizontales opposées —
+/// l'icône « données mobiles » d'Android, couchée.
+///
+/// Tracé en code plutôt qu'importé en image, pour que la marque affichée dans
+/// l'application soit rigoureusement la même que l'icône de lancement : mêmes
+/// proportions, et une netteté parfaite à toute taille.
+class BrandGlyphPainter extends CustomPainter {
+  final Color color;
+
+  const BrandGlyphPainter({required this.color});
+
+  // Proportions reprises du générateur d'icône (rapportées à un carré de 1).
+  static const _span = 0.488;
+  static const _gap = 0.191;
+  static const _thickness = 0.0703;
+  static const _headLength = 0.1133;
+  static const _headHalf = 0.084;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.shortestSide;
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+    final paint = Paint()..color = color;
+
+    void arrow({required double y, required bool toRight}) {
+      final half = _span * s / 2;
+      final tip = toRight ? cx + half : cx - half;
+      final tail = toRight ? cx - half : cx + half;
+      final dir = toRight ? 1.0 : -1.0;
+      final base = tip - dir * _headLength * s;
+
+      // Hampe à bouts arrondis, prolongée sous la pointe pour éviter
+      // toute encoche à la jonction.
+      final shaftEnd = tip - dir * _headLength * s * 0.72;
+      final rect = Rect.fromLTRB(
+        math.min(tail, shaftEnd),
+        y - _thickness * s / 2,
+        math.max(tail, shaftEnd),
+        y + _thickness * s / 2,
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect, Radius.circular(_thickness * s / 2)),
+        paint,
+      );
+
+      canvas.drawPath(
+        Path()
+          ..moveTo(base, y - _headHalf * s)
+          ..lineTo(base, y + _headHalf * s)
+          ..lineTo(tip, y)
+          ..close(),
+        paint,
+      );
+    }
+
+    arrow(y: cy - _gap * s / 2, toRight: true);
+    arrow(y: cy + _gap * s / 2, toRight: false);
+  }
+
+  @override
+  bool shouldRepaint(BrandGlyphPainter oldDelegate) =>
+      oldDelegate.color != color;
+}
+
 /// Signature visuelle de l'application (pastille orange + nom).
 class BrandMark extends StatelessWidget {
   final double size;
@@ -419,7 +640,6 @@ class BrandMark extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.colors;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -428,7 +648,7 @@ class BrandMark extends StatelessWidget {
           height: size,
           decoration: BoxDecoration(
             gradient: const LinearGradient(
-              colors: [Color(0xFFFF8A3D), kBrand],
+              colors: [Color(0xFFFF8D42), Color(0xFFFA6400)],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
@@ -441,10 +661,8 @@ class BrandMark extends StatelessWidget {
               ),
             ],
           ),
-          child: Icon(
-            Icons.swap_horiz_rounded,
-            color: c.onBrand,
-            size: size * 0.58,
+          child: CustomPaint(
+            painter: const BrandGlyphPainter(color: Colors.white),
           ),
         ),
         if (showWordmark) ...[

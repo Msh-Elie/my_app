@@ -8,6 +8,7 @@ import 'api_client.dart';
 import 'history_page.dart';
 import 'history_storage.dart';
 import 'menu_page.dart';
+import 'operator_picker.dart';
 import 'operators.dart';
 import 'theme.dart';
 import 'ui_kit.dart';
@@ -405,9 +406,6 @@ Future<void> _loadProviders() async {
       if (!providers.contains(selectedTo)) selectedTo = providers.first;
       _rememberOperatorSelection();
     });
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _syncOperatorWheelPositions();
-    });
   } catch (_) {
     // serveur injoignable : on garde la liste statique
   }
@@ -416,8 +414,6 @@ Future<void> _loadProviders() async {
 String selectedFrom = _OperatorSelectionSession.defaultProvider;
 String selectedTo = _OperatorSelectionSession.defaultProvider;
 
-late FixedExtentScrollController fromController;
-late FixedExtentScrollController toController;
 late TextEditingController sendController;
 late TextEditingController receiveController;
 late TextEditingController amountController;
@@ -448,19 +444,6 @@ void _rememberOperatorSelection() {
   _OperatorSelectionSession.selectedTo = selectedTo;
 }
 
-void _syncOperatorWheelPositions() {
-  try {
-    final fromIndex = providers.indexOf(selectedFrom);
-    if (fromIndex >= 0 && fromController.hasClients) {
-      fromController.jumpToItem(fromIndex);
-    }
-    final toIndex = providers.indexOf(selectedTo);
-    if (toIndex >= 0 && toController.hasClients) {
-      toController.jumpToItem(toIndex);
-    }
-  } catch (_) {}
-}
-
 @override
 void initState() {
 super.initState();
@@ -478,25 +461,16 @@ selectedTab = tabController.index;
 });
 });
 
-fromController = FixedExtentScrollController(initialItem: providers.indexOf(selectedFrom));
-toController = FixedExtentScrollController(initialItem: providers.indexOf(selectedTo));
-
 sendController = TextEditingController();
 receiveController = TextEditingController();
 amountController = TextEditingController();
 
-WidgetsBinding.instance.addPostFrameCallback((_) {
-  if (!mounted) return;
-  _syncOperatorWheelPositions();
-});
 }
 
 @override
 void dispose() {
 recipientLookupDebounce?.cancel();
 statusPollTimer?.cancel();
-fromController.dispose();
-toController.dispose();
 sendController.dispose();
 receiveController.dispose();
 amountController.dispose();
@@ -1061,6 +1035,13 @@ Widget _buildTransferTab() {
           duration: const Duration(milliseconds: 320),
           switchInCurve: Curves.easeOutCubic,
           switchOutCurve: Curves.easeIn,
+          // Par défaut AnimatedSwitcher empile ses enfants centrés : une étape
+          // au contenu court flottait au milieu de l'écran, laissant un grand
+          // vide sous la barre de progression. On aligne donc en haut.
+          layoutBuilder: (currentChild, previousChildren) => Stack(
+            alignment: Alignment.topCenter,
+            children: [...previousChildren, if (currentChild != null) currentChild],
+          ),
           transitionBuilder: (child, animation) {
             return FadeTransition(
               opacity: animation,
@@ -1086,19 +1067,7 @@ Widget _buildTransferTab() {
 
 void _goToPreviousStep() {
   if (stepIndex <= 0) return;
-  final newStep = stepIndex - 1;
-  if (newStep == 0) {
-    // Les roues sont hors du tree (step > 0) donc les controllers n'ont
-    // aucune position attachée : on peut les recréer avec le bon
-    // initialItem avant le rebuild.
-    final fi = providers.indexOf(selectedFrom).clamp(0, providers.length - 1);
-    final ti = providers.indexOf(selectedTo).clamp(0, providers.length - 1);
-    fromController.dispose();
-    toController.dispose();
-    fromController = FixedExtentScrollController(initialItem: fi);
-    toController = FixedExtentScrollController(initialItem: ti);
-  }
-  setState(() => stepIndex = newStep);
+  setState(() => stepIndex = stepIndex - 1);
 }
 
 /// Rappel permanent du trajet choisi : « MTN BJ → MOOV BJ ».
@@ -1173,33 +1142,43 @@ Widget _buildOperatorStep() {
         Text('D\'où vers où ?', style: context.text.headlineSmall),
         const SizedBox(height: AppSpacing.xs),
         Text(
-          'Faites défiler pour choisir l\'opérateur de départ et celui d\'arrivée.',
+          'Touchez une carte pour choisir l\'opérateur.',
           style: context.text.bodyMedium,
         ),
         const SizedBox(height: AppSpacing.lg),
-        AppCard(
-          padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
-          child: Column(
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text('DEPUIS',
-                        textAlign: TextAlign.center,
-                        style: context.text.labelSmall),
-                  ),
-                  Expanded(
-                    child: Text('VERS',
-                        textAlign: TextAlign.center,
-                        style: context.text.labelSmall),
-                  ),
-                ],
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              SizedBox(height: 180, child: _buildWheels()),
-            ],
-          ),
+
+        // Les deux extrémités du trajet, séparées par le bouton d'inversion.
+        // Le bouton chevauche les cartes : il appartient visuellement aux
+        // deux, ce qui rend son effet évident.
+        Stack(
+          alignment: Alignment.center,
+          children: [
+            Column(
+              children: [
+                OperatorSelectorCard(
+                  caption: 'Depuis',
+                  label: selectedFrom,
+                  prefix: providerPrefixes[selectedFrom] ?? '',
+                  warning: sourceCanSend ? null : 'indisponible',
+                  onTap: () => _pickOperator(isSource: true),
+                ),
+                const SizedBox(height: AppSpacing.md),
+                OperatorSelectorCard(
+                  caption: 'Vers',
+                  label: selectedTo,
+                  prefix: providerPrefixes[selectedTo] ?? '',
+                  warning: destinationCanReceive ? null : 'indisponible',
+                  onTap: () => _pickOperator(isSource: false),
+                ),
+              ],
+            ),
+            Positioned(
+              right: AppSpacing.lg,
+              child: SwapDirectionButton(onSwap: _swapOperators),
+            ),
+          ],
         ),
+
         if (blockedRouteMessage != null) ...[
           const SizedBox(height: AppSpacing.md),
           InfoBanner(
@@ -1208,7 +1187,7 @@ Widget _buildOperatorStep() {
             icon: Icons.block_rounded,
           ),
         ],
-        const SizedBox(height: AppSpacing.md),
+        const SizedBox(height: AppSpacing.lg),
         Row(
           children: [
             Icon(Icons.lock_outline_rounded, size: 14, color: c.textMuted),
@@ -1226,131 +1205,60 @@ Widget _buildOperatorStep() {
   );
 }
 
-/// Les deux roues de sélection, avec un bandeau de sélection et un dégradé
-/// haut/bas qui fait « disparaître » les éléments non sélectionnés.
-Widget _buildWheels() {
-  final c = context.colors;
+/// Inverse le sens du transfert. Les numéros suivent les opérateurs : ils
+/// resteraient faux s'ils restaient en place, et la recherche d'identité du
+/// bénéficiaire doit être relancée.
+void _swapOperators() {
+  setState(() {
+    final from = selectedFrom;
+    selectedFrom = selectedTo;
+    selectedTo = from;
 
-  return Stack(
-    alignment: Alignment.center,
-    children: [
-      // Bandeau de sélection
-      Container(
-        height: 44,
-        margin: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
-        decoration: BoxDecoration(
-          color: c.brandSurface,
-          borderRadius: BorderRadius.circular(AppRadius.sm),
-          border: Border.all(color: c.brandBorder),
-        ),
-      ),
-      Row(
-        children: [
-          Expanded(
-            child: _buildWheel(
-              controller: fromController,
-              selected: selectedFrom,
-              onChanged: (v) => setState(() {
-                selectedFrom = v;
-                _rememberOperatorSelection();
-              }),
-            ),
-          ),
-          Expanded(
-            child: _buildWheel(
-              controller: toController,
-              selected: selectedTo,
-              onChanged: (v) => setState(() {
-                selectedTo = v;
-                _rememberOperatorSelection();
-                _resetRecipientLookup();
-              }),
-            ),
-          ),
-        ],
-      ),
-      // Estompe haut/bas
-      Positioned.fill(
-        child: IgnorePointer(
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  c.surface,
-                  c.surface.withValues(alpha: 0),
-                  c.surface.withValues(alpha: 0),
-                  c.surface,
-                ],
-                stops: const [0.0, 0.26, 0.74, 1.0],
-              ),
-            ),
-          ),
-        ),
-      ),
-    ],
-  );
+    final sendText = sendController.text;
+    sendController.text = receiveController.text;
+    receiveController.text = sendText;
+
+    _rememberOperatorSelection();
+    _resetRecipientLookup();
+  });
 }
 
-Widget _buildWheel({
-  required FixedExtentScrollController controller,
-  required String selected,
-  required ValueChanged<String> onChanged,
-}) {
-  final c = context.colors;
+/// Ouvre la feuille de sélection pour l'une des deux extrémités.
+Future<void> _pickOperator({required bool isSource}) async {
+  final options = [
+    for (final label in providers)
+      OperatorOption(
+        label: label,
+        prefix: providerPrefixes[label] ?? '',
+        // Un opérateur n'est proposé que pour les sens qu'il sait assurer.
+        available: isSource
+            ? (providerDepositCapable[label] ?? true)
+            : (providerPayoutCapable[label] ?? true),
+        unavailableReason: isSource
+            ? 'Ne peut pas encore émettre'
+            : 'Ne peut pas encore recevoir',
+      ),
+  ];
 
-  return ListWheelScrollView.useDelegate(
-    controller: controller,
-    itemExtent: 44,
-    physics: const FixedExtentScrollPhysics(),
-    overAndUnderCenterOpacity: 0.55,
-    perspective: 0.002,
-    diameterRatio: 1.8,
-    onSelectedItemChanged: (index) {
-      if (index < 0 || index >= providers.length) return;
-      onChanged(providers[index]);
-    },
-    childDelegate: ListWheelChildBuilderDelegate(
-      builder: (context, index) {
-        if (index < 0 || index >= providers.length) return null;
-        final label = providers[index];
-        final isSelected = label == selected;
-        // Le logo accompagne le nom : on reconnaît son opérateur avant
-        // d'avoir fini de lire, et la roue cesse d'être un mur de texte.
-        return Center(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                // Pas d'opacité supplémentaire ici : la roue estompe déjà les
-                // éléments hors du centre (overAndUnderCenterOpacity), et les
-                // deux atténuations cumulées effaçaient les logos.
-                OperatorAvatar(label: label, size: isSelected ? 26 : 22),
-                const SizedBox(width: AppSpacing.sm),
-                Flexible(
-                  child: Text(
-                    label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: isSelected ? 15 : 13.5,
-                      fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                      letterSpacing: -0.2,
-                      color: isSelected ? c.textPrimary : c.textMuted,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-      childCount: providers.length,
-    ),
+  final picked = await showOperatorPicker(
+    context,
+    title: isSource ? 'Envoyer depuis' : 'Envoyer vers',
+    selected: isSource ? selectedFrom : selectedTo,
+    options: options,
   );
+  if (picked == null || !mounted) return;
+
+  setState(() {
+    if (isSource) {
+      selectedFrom = picked;
+    } else {
+      selectedTo = picked;
+      _resetRecipientLookup();
+    }
+    _rememberOperatorSelection();
+  });
 }
+
 
 // ---- Étape 1 : numéros ---------------------------------------------------
 
@@ -1511,11 +1419,11 @@ Widget _buildAmountStep() {
                       child: Text('Le bénéficiaire reçoit',
                           style: context.text.titleSmall),
                     ),
-                    Text(
-                      '${formatThousands(payoutAmount.toStringAsFixed(0))} $currency',
+                    AnimatedAmount(
+                      value: payoutAmount,
+                      currency: currency,
                       style: context.text.titleLarge?.copyWith(
                         color: c.brandText,
-                        fontFeatures: kTabularFigures,
                       ),
                     ),
                   ],
@@ -1682,30 +1590,34 @@ Widget _buildResultStep() {
             curve: Curves.easeOutBack,
             builder: (context, value, child) =>
                 Transform.scale(scale: 0.7 + (value * 0.3), child: child),
-            child: Container(
-              width: 76,
-              height: 76,
-              decoration: BoxDecoration(
-                color: tone.background(context),
-                shape: BoxShape.circle,
-              ),
-              child: isSuccess || isFailure
-                  ? Icon(icon, size: 38, color: tone.foreground(context))
-                  : SizedBox(
-                      width: 30,
-                      height: 30,
-                      child: Center(
-                        child: SizedBox(
-                          width: 26,
-                          height: 26,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2.6,
-                            color: tone.foreground(context),
-                          ),
-                        ),
-                      ),
+            // Le succès se dessine (anneau puis coche) ; l'échec et l'attente
+            // restent sobres — on ne met pas en scène une mauvaise nouvelle.
+            child: isSuccess
+                ? AnimatedCheck(
+                    size: 76,
+                    color: tone.foreground(context),
+                    background: tone.background(context),
+                  )
+                : Container(
+                    width: 76,
+                    height: 76,
+                    decoration: BoxDecoration(
+                      color: tone.background(context),
+                      shape: BoxShape.circle,
                     ),
-            ),
+                    child: isFailure
+                        ? Icon(icon, size: 38, color: tone.foreground(context))
+                        : Center(
+                            child: SizedBox(
+                              width: 26,
+                              height: 26,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.6,
+                                color: tone.foreground(context),
+                              ),
+                            ),
+                          ),
+                  ),
           ),
         ),
         const SizedBox(height: AppSpacing.lg),

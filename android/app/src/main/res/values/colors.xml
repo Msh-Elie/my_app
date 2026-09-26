@@ -5,4 +5,5 @@
          affiche un fond noir avant le premier écran Flutter : le lancement
          donne l'impression d'un plantage. -->
     <color name="splash_background">#F5F6F8</color>
+	<color name="ic_launcher_background">#FE6F0B</color>
 </resources>

@@ -136,4 +136,33 @@ void main() {
       expect(groupByDay(const [], now: now), isEmpty);
     });
   });
+
+  group('foldAccents', () {
+    test('replie les accents pour le tri et la recherche', () {
+      expect(foldAccents('Bénin'), 'benin');
+      expect(foldAccents('Côte d\'Ivoire'), 'cote d\'ivoire');
+      expect(foldAccents('Burkina Faso'), 'burkina faso');
+    });
+
+    // Sans repli, « Burkina Faso » passerait avant « Bénin » : 'u' vaut 117
+    // quand 'é' vaut 233.
+    test('retablit l\'ordre alphabetique francais', () {
+      final pays = ['Burkina Faso', 'Bénin', 'Côte d\'Ivoire', 'Cameroun'];
+      pays.sort((a, b) => foldAccents(a).compareTo(foldAccents(b)));
+      expect(pays, ['Bénin', 'Burkina Faso', 'Cameroun', 'Côte d\'Ivoire']);
+    });
+  });
+
+  group('operatorCountryName', () {
+    test('traduit le code pays', () {
+      expect(operatorCountryName('MTN BJ'), 'Bénin');
+      expect(operatorCountryName('SAFARICOM KE'), 'Kenya');
+      expect(operatorCountryName('OM CI'), 'Côte d\'Ivoire');
+    });
+
+    test('retombe sur le code puis sur « Autres »', () {
+      expect(operatorCountryName('TRUC XX'), 'XX');
+      expect(operatorCountryName('WAVE'), 'Autres');
+    });
+  });
 }
