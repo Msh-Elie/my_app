@@ -1,13 +1,13 @@
 <resources>
 
-    <!-- Thème Splash -->
-    <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
+    <!-- Thème de l'écran de lancement (avant que Flutter ne prenne la main) -->
+    <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
         <item name="android:windowBackground">@drawable/launch_background</item>
     </style>
 
-    <!-- Thème Flutter (après splash) -->
-    <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">
-        <item name="android:windowBackground">@android:color/black</item>
+    <!-- Thème appliqué une fois Flutter démarré -->
+    <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
+        <item name="android:windowBackground">@color/splash_background</item>
     </style>
 
 </resources>

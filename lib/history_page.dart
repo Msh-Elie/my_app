@@ -1,28 +1,21 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/flutter_svg.dart';
+import 'package:flutter/services.dart';
 
 import 'api_client.dart';
 import 'history_storage.dart';
+import 'operators.dart';
+import 'theme.dart';
+import 'ui_kit.dart';
 
 class HistoryPage extends StatelessWidget {
-  final ThemeMode themeMode;
-  final ValueChanged<ThemeMode> onThemeChange;
-
-  const HistoryPage({
-    super.key,
-    required this.themeMode,
-    required this.onThemeChange,
-  });
+  const HistoryPage({super.key});
 
   @override
   Widget build(BuildContext context) {
     return const Scaffold(
-      backgroundColor: Color(0xFF000000),
-      body: SafeArea(
-        child: HistoryContent(embedded: false),
-      ),
+      body: SafeArea(child: HistoryContent(embedded: false)),
     );
   }
 }
@@ -37,10 +30,6 @@ class HistoryContent extends StatefulWidget {
 }
 
 class _HistoryContentState extends State<HistoryContent> {
-  static const Color _accent = Color(0xFFFE6F0B);
-  static const Color _surface = Color(0xFF000000);
-  static const Color _card = Color(0xFF121212);
-
   int selectedStatus = 0; // 0 = tout, 1 = valide, 2 = en_cours, 3 = echec
   bool loading = true;
 
@@ -76,7 +65,8 @@ class _HistoryContentState extends State<HistoryContent> {
 
       if (resp.statusCode == 200) {
         final decoded = jsonDecode(resp.body);
-        final rawItems = (decoded is Map<String, dynamic>) ? decoded['items'] : null;
+        final rawItems =
+            (decoded is Map<String, dynamic>) ? decoded['items'] : null;
         if (rawItems is List) {
           final fromApi = rawItems
               .whereType<Map>()
@@ -107,7 +97,7 @@ class _HistoryContentState extends State<HistoryContent> {
         }
       }
     } catch (_) {
-      // backend unavailable: fallback to local history
+      // backend indisponible : repli sur l'historique local
     }
 
     final stored = await HistoryStorage.load();
@@ -128,310 +118,446 @@ class _HistoryContentState extends State<HistoryContent> {
     return persisted.where((e) => e.status.toLowerCase() == wanted).toList();
   }
 
+  int _countFor(int filter) {
+    if (filter == 0) return persisted.length;
+    final wanted = switch (filter) {
+      1 => 'valide',
+      3 => 'echec',
+      _ => 'en_cours',
+    };
+    return persisted.where((e) => e.status.toLowerCase() == wanted).length;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final visibleEntries = _visibleEntries;
+    final horizontal = widget.embedded ? AppSpacing.md : AppSpacing.lg;
+    final groups = groupByDay(_visibleEntries);
 
-    return Container(
-      color: _surface,
-      child: Column(
-        children: [
-          if (!widget.embedded)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(8, 8, 16, 4),
-              child: Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.chevron_left, color: Colors.white, size: 28),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                  const Expanded(
-                    child: Center(
-                      child: Text(
-                        'Historique',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 36,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 48),
-                ],
-              ),
-            ),
-          if (!widget.embedded) Container(height: 1, color: const Color(0x22FFFFFF)),
-          SizedBox(height: widget.embedded ? 30 : 36),
+    return Column(
+      children: [
+        if (!widget.embedded)
           Padding(
-            padding: EdgeInsets.symmetric(horizontal: widget.embedded ? 12 : 16),
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.sm,
+              AppSpacing.sm,
+              AppSpacing.lg,
+              AppSpacing.sm,
+            ),
             child: Row(
               children: [
+                IconButton(
+                  icon: const Icon(Icons.chevron_left_rounded, size: 26),
+                  onPressed: () => Navigator.pop(context),
+                ),
                 Expanded(
-                  child: _StatusChip(
-                    label: 'Tout',
-                    active: selectedStatus == 0,
-                    onTap: () => setState(() => selectedStatus = 0),
+                  child: Text(
+                    'Historique',
+                    textAlign: TextAlign.center,
+                    style: context.text.titleLarge,
                   ),
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _StatusChip(
-                    label: 'Valide',
-                    active: selectedStatus == 1,
-                    onTap: () => setState(() => selectedStatus = 1),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _StatusChip(
-                    label: 'En cours',
-                    active: selectedStatus == 2,
-                    onTap: () => setState(() => selectedStatus = 2),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _StatusChip(
-                    label: 'Échec',
-                    active: selectedStatus == 3,
-                    onTap: () => setState(() => selectedStatus = 3),
-                  ),
-                ),
+                const SizedBox(width: 44),
               ],
             ),
           ),
-          const SizedBox(height: 10),
-          Expanded(
-            child: loading
-                ? const Center(child: CircularProgressIndicator(color: _accent))
-                : visibleEntries.isEmpty
-                    ? const Center(
-                        child: Text(
-                          'Aucune transaction pour ce filtre',
-                          style: TextStyle(fontSize: 16, color: Color(0xFFB5B5B5)),
-                        ),
-                      )
-                    : ListView.separated(
-                        padding: EdgeInsets.fromLTRB(
-                          widget.embedded ? 10 : 16,
-                          8,
-                          widget.embedded ? 10 : 16,
-                          20,
-                        ),
-                        itemBuilder: (context, index) {
-                          final item = visibleEntries[index];
-                          return _HistoryCard(item: item, cardColor: _card, accent: _accent);
-                        },
-                        separatorBuilder: (_, __) => const SizedBox(height: 12),
-                        itemCount: visibleEntries.length,
-                      ),
+
+        // Filtres par statut
+        Padding(
+          padding: EdgeInsets.fromLTRB(
+            horizontal,
+            widget.embedded ? AppSpacing.sm : 0,
+            horizontal,
+            AppSpacing.md,
           ),
-        ],
-      ),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                for (final (index, label) in const [
+                  (0, 'Tout'),
+                  (1, 'Validé'),
+                  (2, 'En cours'),
+                  (3, 'Échec'),
+                ])
+                  Padding(
+                    padding: const EdgeInsets.only(right: AppSpacing.sm),
+                    child: _FilterChip(
+                      label: label,
+                      count: _countFor(index),
+                      active: selectedStatus == index,
+                      onTap: () => setState(() => selectedStatus = index),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+
+        Expanded(
+          child: loading
+              ? _HistorySkeleton(horizontal: horizontal)
+              : groups.isEmpty
+                  ? _EmptyState(filtered: selectedStatus != 0)
+                  : RefreshIndicator(
+                      color: context.colors.brand,
+                      onRefresh: _loadHistory,
+                      child: ListView.builder(
+                        padding: EdgeInsets.fromLTRB(
+                          horizontal,
+                          AppSpacing.xs,
+                          horizontal,
+                          AppSpacing.xl,
+                        ),
+                        itemCount: groups.length,
+                        itemBuilder: (context, index) {
+                          final group = groups[index];
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Padding(
+                                padding: EdgeInsets.only(
+                                  top: index == 0 ? 0 : AppSpacing.lg,
+                                  bottom: AppSpacing.sm,
+                                  left: AppSpacing.xs,
+                                ),
+                                child: Row(
+                                  children: [
+                                    Text(group.label.toUpperCase(),
+                                        style: context.text.labelSmall),
+                                    const SizedBox(width: AppSpacing.sm),
+                                    Expanded(
+                                      child: Divider(
+                                          height: 1, color: context.colors.border),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              for (final item in group.items)
+                                Padding(
+                                  padding: const EdgeInsets.only(
+                                      bottom: AppSpacing.sm),
+                                  child: _HistoryCard(item: item),
+                                ),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
+        ),
+      ],
     );
   }
 }
 
-class _StatusChip extends StatelessWidget {
+/// Un paquet d'opérations partageant le même jour.
+class HistoryGroup {
   final String label;
+  final List<HistoryRecord> items;
+
+  const HistoryGroup(this.label, this.items);
+}
+
+/// Date stockée au format `jj/mm/aaaa` (voir HistoryStorage.formatDisplayDate).
+DateTime? parseHistoryDate(String raw) {
+  final match = RegExp(r'^(\d{2})/(\d{2})/(\d{4})').firstMatch(raw.trim());
+  if (match == null) return null;
+  final day = int.tryParse(match.group(1)!);
+  final month = int.tryParse(match.group(2)!);
+  final year = int.tryParse(match.group(3)!);
+  if (day == null || month == null || year == null) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return DateTime(year, month, day);
+}
+
+const _months = [
+  'janvier', 'février', 'mars', 'avril', 'mai', 'juin',
+  'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre',
+];
+
+/// Libellé relatif d'un jour : « Aujourd'hui », « Hier », sinon la date en
+/// toutes lettres. Repérer une opération récente devient immédiat.
+String dayLabel(DateTime day, {DateTime? now}) {
+  final today = now ?? DateTime.now();
+  final d = DateTime(day.year, day.month, day.day);
+  final t = DateTime(today.year, today.month, today.day);
+  final diff = t.difference(d).inDays;
+
+  if (diff == 0) return 'Aujourd\'hui';
+  if (diff == 1) return 'Hier';
+  final month = _months[day.month - 1];
+  return day.year == today.year
+      ? '${day.day} $month'
+      : '${day.day} $month ${day.year}';
+}
+
+/// Regroupe les opérations par jour, les plus récentes d'abord. Les dates
+/// illisibles sont rassemblées à la fin plutôt que masquées.
+List<HistoryGroup> groupByDay(List<HistoryRecord> items, {DateTime? now}) {
+  final byDay = <DateTime, List<HistoryRecord>>{};
+  final undated = <HistoryRecord>[];
+
+  for (final item in items) {
+    final date = parseHistoryDate(item.date);
+    if (date == null) {
+      undated.add(item);
+    } else {
+      byDay.putIfAbsent(date, () => []).add(item);
+    }
+  }
+
+  final days = byDay.keys.toList()..sort((a, b) => b.compareTo(a));
+  final groups = [
+    for (final day in days) HistoryGroup(dayLabel(day, now: now), byDay[day]!),
+  ];
+  if (undated.isNotEmpty) groups.add(HistoryGroup('Autres', undated));
+  return groups;
+}
+
+/// Filtre avec compteur : on voit d'un coup d'œil combien d'opérations
+/// tombent dans chaque état.
+class _FilterChip extends StatelessWidget {
+  final String label;
+  final int count;
   final bool active;
   final VoidCallback onTap;
 
-  const _StatusChip({
+  const _FilterChip({
     required this.label,
+    required this.count,
     required this.active,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    final compact = MediaQuery.of(context).size.width < 390;
-
+    final c = context.colors;
     return GestureDetector(
       onTap: onTap,
+      behavior: HitTestBehavior.opaque,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         curve: Curves.easeOut,
-        padding: EdgeInsets.all(compact ? 2 : 2.5),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1C1C1C),
-          borderRadius: BorderRadius.circular(compact ? 12 : 16),
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.md,
+          vertical: AppSpacing.sm,
         ),
-        child: Container(
-          padding: EdgeInsets.symmetric(vertical: compact ? 8 : 10),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1C1C1C),
-            borderRadius: BorderRadius.circular(compact ? 10 : 13),
-            boxShadow: active
-                ? const [
-                    BoxShadow(
-                      color: Color(0x33FE6F0B),
-                      blurRadius: 10,
-                      spreadRadius: 1,
-                    ),
-                  ]
-                : null,
-          ),
-          child: Center(
-            child: Text(
+        decoration: BoxDecoration(
+          color: active ? c.brandSurface : c.surface,
+          borderRadius: BorderRadius.circular(AppRadius.pill),
+          border: Border.all(color: active ? c.brandBorder : c.border),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
               label,
-              style: TextStyle(
-                fontSize: compact ? 13 : 14,
-                fontWeight: FontWeight.w600,
-                color: active ? const Color(0xFFFFB179) : const Color(0xFFE0E0E0),
+              style: context.text.labelMedium?.copyWith(
+                color: active ? c.brandText : c.textSecondary,
               ),
             ),
-          ),
+            if (count > 0) ...[
+              const SizedBox(width: 6),
+              Text(
+                '$count',
+                style: context.text.labelMedium?.copyWith(
+                  color: active ? c.brandText : c.textMuted,
+                  fontFeatures: kTabularFigures,
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );
   }
 }
 
-class _HistoryCard extends StatelessWidget {
-  final HistoryRecord item;
-  final Color cardColor;
-  final Color accent;
+/// Esquisse affichée pendant le chargement : la page garde sa forme au lieu
+/// de sauter d'un indicateur centré à une liste pleine.
+class _HistorySkeleton extends StatelessWidget {
+  final double horizontal;
 
-  const _HistoryCard({
-    required this.item,
-    required this.cardColor,
-    required this.accent,
-  });
-
-  Color _badgeColor(String label) {
-    final key = label.toUpperCase();
-    if (key.contains('USDT')) return const Color(0xFFFE6F0B);
-    if (key.contains('MTN')) return const Color(0xFFF08D3A);
-    if (key.contains('TRX')) return const Color(0xFFD95C00);
-    if (key.contains('VOLET')) return const Color(0xFFFF8A2B);
-    if (key.contains('DERIV')) return const Color(0xFFC24F00);
-    if (key.contains('CELTIS')) return const Color(0xFF9D4300);
-    return const Color(0xFFFE6F0B);
-  }
-
-  String _shortLabel(String label) {
-    final clean = label.trim();
-    if (clean.isEmpty) return '?';
-    final parts = clean.split(' ');
-    if (parts.length > 1 && parts.last.length == 2) {
-      return parts.first.toUpperCase();
-    }
-    return clean.toUpperCase();
-  }
-
-  String? _logoAssetFor(String label) {
-    final key = label.toUpperCase();
-    if (key.contains('MTN')) return 'assets/logos/mtn.png';
-    if (key.contains('AIRTEL')) return 'assets/logos/airtel.svg';
-    if (key.contains('ORANGE') || key.contains('OM ')) return 'assets/logos/orange.png';
-    if (key.contains('MOOV')) return 'assets/logos/moov.png';
-    if (key.contains('CELTIS')) return 'assets/logos/celtis.png';
-    if (key.contains('WAVE')) return 'assets/logos/wave.png';
-    if (key.contains('VODAFONE')) return 'assets/logos/vodafone.png';
-    if (key.contains('SAFARICOM')) return 'assets/logos/safaricom.png';
-    return null;
-  }
-
-  bool get _isSuccess => item.status.toLowerCase() == 'valide';
-  bool get _isFailure => item.status.toLowerCase() == 'echec';
-
-  Color get _statusColor => _isSuccess
-      ? const Color(0xFF33D17A)
-      : _isFailure
-          ? const Color(0xFFFF6B6B)
-          : const Color(0xFFFFB06D);
+  const _HistorySkeleton({required this.horizontal});
 
   @override
   Widget build(BuildContext context) {
-    final compact = MediaQuery.of(context).size.width < 390;
-    final fromLabel = _shortLabel(item.from);
-    final toLabel = _shortLabel(item.to);
-    final fromLogo = _logoAssetFor(item.from) ?? item.fromLogo;
-    final toLogo = _logoAssetFor(item.to) ?? item.toLogo;
-    final statusText = _isSuccess
-        ? 'Succes'
-        : _isFailure
-            ? 'Échec'
-            : 'En cours';
+    final c = context.colors;
+    Widget bar(double width, double height) => Container(
+          width: width,
+          height: height,
+          decoration: BoxDecoration(
+            color: c.surfaceHover,
+            borderRadius: BorderRadius.circular(AppRadius.sm),
+          ),
+        );
 
-    return Container(
-      padding: EdgeInsets.symmetric(horizontal: compact ? 10 : 14, vertical: compact ? 10 : 14),
-      decoration: BoxDecoration(
-        color: cardColor,
-        borderRadius: BorderRadius.circular(compact ? 14 : 18),
+    return ListView.separated(
+      padding: EdgeInsets.fromLTRB(horizontal, AppSpacing.xs, horizontal, 0),
+      itemCount: 4,
+      separatorBuilder: (_, __) => const SizedBox(height: AppSpacing.sm),
+      itemBuilder: (_, __) => AppCard(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        child: Row(
+          children: [
+            Container(
+              width: 52,
+              height: 34,
+              decoration: BoxDecoration(
+                color: c.surfaceHover,
+                borderRadius: BorderRadius.circular(AppRadius.pill),
+              ),
+            ),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  bar(120, 12),
+                  const SizedBox(height: 8),
+                  bar(70, 10),
+                ],
+              ),
+            ),
+            bar(64, 14),
+          ],
+        ),
       ),
+    );
+  }
+}
+
+class _EmptyState extends StatelessWidget {
+  final bool filtered;
+
+  const _EmptyState({required this.filtered});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.xl),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 64,
+              height: 64,
+              decoration: BoxDecoration(
+                color: c.surfaceMuted,
+                borderRadius: BorderRadius.circular(AppRadius.lg),
+              ),
+              child: Icon(Icons.receipt_long_rounded,
+                  size: 28, color: c.textMuted),
+            ),
+            const SizedBox(height: AppSpacing.lg),
+            Text(
+              filtered ? 'Aucune opération ici' : 'Pas encore de transfert',
+              style: context.text.titleMedium,
+            ),
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              filtered
+                  ? 'Essayez un autre filtre pour voir vos opérations.'
+                  : 'Vos transferts apparaîtront ici une fois effectués.',
+              textAlign: TextAlign.center,
+              style: context.text.bodySmall,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+Tone toneForStatus(String status) => switch (status.toLowerCase()) {
+      'valide' => Tone.success,
+      'echec' => Tone.danger,
+      _ => Tone.warning,
+    };
+
+String labelForStatus(String status) => switch (status.toLowerCase()) {
+      'valide' => 'Validé',
+      'echec' => 'Échec',
+      _ => 'En cours',
+    };
+
+IconData iconForStatus(String status) => switch (status.toLowerCase()) {
+      'valide' => Icons.check_rounded,
+      'echec' => Icons.close_rounded,
+      _ => Icons.schedule_rounded,
+    };
+
+class _HistoryCard extends StatelessWidget {
+  final HistoryRecord item;
+
+  const _HistoryCard({required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+
+    return AppCard(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.md,
+        vertical: AppSpacing.md,
+      ),
+      onTap: () => _showDetails(context, item),
       child: Row(
         children: [
-          _CoinBadge(label: fromLabel, color: _badgeColor(item.from), compact: compact, logoAsset: fromLogo),
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: compact ? 3 : 6),
-            child: Icon(Icons.arrow_right_alt_rounded, size: compact ? 19 : 24, color: const Color(0xFFFFA35B)),
+          OperatorPair(
+            from: item.from,
+            to: item.to,
+            size: 36,
+            fromLogoUrl: item.fromLogo,
+            toLogoUrl: item.toLogo,
           ),
-          _CoinBadge(label: toLabel, color: _badgeColor(item.to), compact: compact, logoAsset: toLogo),
-          SizedBox(width: compact ? 8 : 12),
+          const SizedBox(width: AppSpacing.md),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'ID : ${item.id}',
-                  style: TextStyle(
-                    fontSize: compact ? 15 : 18,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white,
+                // Un seul bloc de texte plutôt que deux `Flexible` côte à
+                // côte : ces derniers se partageaient la largeur à parts
+                // égales et tronquaient « ORANGE » alors que « WAVE »
+                // laissait de la place. La flèche est une icône et non le
+                // caractère « → », que certaines polices ne dessinent pas.
+                Text.rich(
+                  TextSpan(
+                    children: [
+                      TextSpan(text: operatorBrand(item.from)),
+                      WidgetSpan(
+                        alignment: PlaceholderAlignment.middle,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 5),
+                          child: Icon(Icons.arrow_forward_rounded,
+                              size: 13, color: c.textMuted),
+                        ),
+                      ),
+                      TextSpan(text: operatorBrand(item.to)),
+                    ],
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: context.text.titleSmall,
                 ),
-                SizedBox(height: compact ? 1 : 2),
-                Text(
-                  item.date,
-                  style: TextStyle(fontSize: compact ? 12 : 15, color: const Color(0xFFB8B8B8)),
+                const SizedBox(height: 5),
+                StatusPill(
+                  label: labelForStatus(item.status),
+                  tone: toneForStatus(item.status),
+                  icon: iconForStatus(item.status),
                 ),
               ],
             ),
           ),
-          SizedBox(
-            width: compact ? 96 : 124,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(
-                  item.amount,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.right,
-                  style: TextStyle(
-                    fontSize: compact ? 15 : 18,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white,
-                  ),
-                ),
-                SizedBox(height: compact ? 1 : 2),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    Text(
-                      statusText,
-                      style: TextStyle(
-                        fontSize: compact ? 12 : 15,
-                        fontWeight: FontWeight.w500,
-                        color: _statusColor,
-                      ),
-                    ),
-                    SizedBox(width: compact ? 2 : 3),
-                    Icon(
-                      _isSuccess
-                          ? Icons.check
-                          : _isFailure
-                              ? Icons.close
-                              : Icons.schedule,
-                      color: _statusColor,
-                      size: compact ? 13 : 16,
-                    ),
-                  ],
-                ),
-              ],
+          const SizedBox(width: AppSpacing.sm),
+          Text(
+            formatAmountLabel(item.amount),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: context.text.titleMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+              fontFeatures: kTabularFigures,
             ),
           ),
         ],
@@ -440,70 +566,97 @@ class _HistoryCard extends StatelessWidget {
   }
 }
 
-class _CoinBadge extends StatelessWidget {
-  final String label;
-  final Color color;
-  final bool compact;
-  final String? logoAsset;
+/// Fiche détaillée d'une opération.
+///
+/// La référence et la date vivent ici plutôt que dans la liste : chaque ligne
+/// reste lisible, et l'information complète reste à un tap.
+void _showDetails(BuildContext context, HistoryRecord item) {
+  showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    builder: (sheetContext) {
+      final c = sheetContext.colors;
+      final tone = toneForStatus(item.status);
 
-  const _CoinBadge({required this.label, required this.color, required this.compact, this.logoAsset});
-
-  @override
-  Widget build(BuildContext context) {
-    final size = compact ? 36.0 : 46.0;
-    final textStyle = TextStyle(
-      fontSize: compact ? (label.length > 4 ? 8 : 10) : (label.length > 4 ? 10 : 12),
-      fontWeight: FontWeight.w700,
-      color: color.computeLuminance() > 0.7 ? Colors.black : Colors.white,
-    );
-
-    Widget badgeContent;
-    if (logoAsset != null) {
-      if (logoAsset!.startsWith('http://') || logoAsset!.startsWith('https://')) {
-        badgeContent = ClipOval(
-          child: Image.network(
-            logoAsset!,
-            width: compact ? 21 : 27,
-            height: compact ? 21 : 27,
-            fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => Text(label, textAlign: TextAlign.center, style: textStyle),
+      return SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.xl,
+            AppSpacing.sm,
+            AppSpacing.xl,
+            AppSpacing.xl,
           ),
-        );
-      } else {
-        if (logoAsset!.toLowerCase().endsWith('.svg')) {
-          badgeContent = SvgPicture.asset(
-            logoAsset!,
-            width: compact ? 21 : 27,
-            height: compact ? 21 : 27,
-            fit: BoxFit.contain,
-          );
-        } else {
-          badgeContent = Image.asset(
-            logoAsset!,
-            width: compact ? 21 : 27,
-            height: compact ? 21 : 27,
-            fit: BoxFit.contain,
-            errorBuilder: (_, __, ___) => Text(label, textAlign: TextAlign.center, style: textStyle),
-          );
-        }
-      }
-    } else {
-      badgeContent = Text(label, textAlign: TextAlign.center, style: textStyle);
-    }
-
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        color: logoAsset != null ? const Color(0x00000000) : color,
-        shape: BoxShape.circle,
-        boxShadow: const [
-          BoxShadow(color: Color(0x22000000), blurRadius: 6, offset: Offset(0, 2)),
-        ],
-      ),
-      child: Center(
-        child: badgeContent,
-      ),
-    );
-  }
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Center(
+                child: OperatorPair(from: item.from, to: item.to, size: 52),
+              ),
+              const SizedBox(height: AppSpacing.lg),
+              Text(
+                formatAmountLabel(item.amount),
+                textAlign: TextAlign.center,
+                style: sheetContext.text.displaySmall
+                    ?.copyWith(fontFeatures: kTabularFigures),
+              ),
+              const SizedBox(height: AppSpacing.md),
+              Center(
+                child: StatusPill(
+                  label: labelForStatus(item.status),
+                  tone: tone,
+                  icon: iconForStatus(item.status),
+                ),
+              ),
+              const SizedBox(height: AppSpacing.xl),
+              AppCard(
+                child: Column(
+                  children: [
+                    DetailRow(label: 'Depuis', value: item.from),
+                    DetailRow(label: 'Vers', value: item.to),
+                    DetailRow(label: 'Date', value: item.date),
+                  ],
+                ),
+              ),
+              const SizedBox(height: AppSpacing.md),
+              AppCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Référence de l\'opération',
+                        style: sheetContext.text.labelSmall),
+                    const SizedBox(height: AppSpacing.xs),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: SelectableText(
+                            item.id.isEmpty ? '—' : item.id,
+                            style: sheetContext.text.bodySmall?.copyWith(
+                              color: c.textSecondary,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                        if (item.id.isNotEmpty)
+                          IconButton(
+                            tooltip: 'Copier la référence',
+                            icon: Icon(Icons.copy_rounded,
+                                size: 18, color: c.textMuted),
+                            onPressed: () {
+                              Clipboard.setData(ClipboardData(text: item.id));
+                              showAppSnack(sheetContext, 'Référence copiée',
+                                  tone: Tone.success);
+                            },
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
 }

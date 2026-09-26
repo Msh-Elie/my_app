@@ -4,40 +4,34 @@ import 'api_client.dart';
 import 'help_page.dart';
 import 'profile_page.dart';
 import 'settings_page.dart';
+import 'theme.dart';
+import 'ui_kit.dart';
 
 class MenuPage extends StatelessWidget {
-  final ThemeMode themeMode;
-  final ValueChanged<ThemeMode> onThemeChanged;
   final VoidCallback? onLoggedOut;
 
-  const MenuPage({
-    super.key,
-    required this.themeMode,
-    required this.onThemeChanged,
-    this.onLoggedOut,
-  });
+  const MenuPage({super.key, this.onLoggedOut});
 
   Future<void> _confirmLogout(BuildContext context) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        backgroundColor: const Color(0xFF1C1C1C),
-        title: const Text('Déconnexion',
-            style: TextStyle(color: Colors.white)),
-        content: const Text(
-          'Voulez-vous vraiment vous déconnecter ?',
-          style: TextStyle(color: Colors.white70),
-        ),
+        title: const Text('Déconnexion'),
+        content: const Text('Voulez-vous vraiment vous déconnecter ?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
-            child:
-                const Text('Annuler', style: TextStyle(color: Colors.white54)),
+            child: Text(
+              'Annuler',
+              style: TextStyle(color: dialogContext.colors.textSecondary),
+            ),
           ),
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Se déconnecter',
-                style: TextStyle(color: Colors.orange)),
+            child: Text(
+              'Se déconnecter',
+              style: TextStyle(color: dialogContext.colors.danger),
+            ),
           ),
         ],
       ),
@@ -54,72 +48,203 @@ class MenuPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final user = ApiClient.instance.user;
+    final c = context.colors;
 
     return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        title: const Text('Menu', style: TextStyle(color: Colors.white)),
-        elevation: 0,
-      ),
+      appBar: AppBar(title: const Text('Mon compte')),
       body: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 16),
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.lg,
+          AppSpacing.sm,
+          AppSpacing.lg,
+          AppSpacing.xxl,
+        ),
         children: [
-          ListTile(
-            leading: const CircleAvatar(
-              backgroundColor: Color(0xFFFE6F0B),
-              child: Icon(Icons.person, color: Colors.black),
+          // Carte d'identité : l'utilisateur voit immédiatement sous quel
+          // compte il agit.
+          AppCard(
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const ProfilePage()),
             ),
-            title: Text(
-              user?.name ?? 'Utilisateur',
-              style: const TextStyle(
-                  color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-            subtitle: Text(
-              user != null ? '+${user.phone}' : 'Non connecté',
-              style: const TextStyle(color: Colors.white70),
-            ),
-          ),
-          const Divider(color: Colors.white24),
-          ListTile(
-            leading: const Icon(Icons.person, color: Colors.orange),
-            title: const Text('Profil', style: TextStyle(color: Colors.white)),
-            onTap: () {
-              Navigator.push(context,
-                  MaterialPageRoute(builder: (context) => const ProfilePage()));
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.settings, color: Colors.orange),
-            title: const Text('Paramètres',
-                style: TextStyle(color: Colors.white)),
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => SettingsPage(
-                      themeMode: themeMode, onThemeChanged: onThemeChanged),
+            child: Row(
+              children: [
+                _Avatar(name: user?.name),
+                const SizedBox(width: AppSpacing.md),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        user?.name ?? 'Utilisateur',
+                        style: context.text.titleMedium,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        user != null ? '+${user.phone}' : 'Non connecté',
+                        style: context.text.bodySmall?.copyWith(
+                          fontFeatures: kTabularFigures,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              );
-            },
+                Icon(Icons.chevron_right_rounded, color: c.textMuted),
+              ],
+            ),
           ),
-          ListTile(
-            leading: const Icon(Icons.help_outline, color: Colors.orange),
-            title: const Text('Aide', style: TextStyle(color: Colors.white)),
-            onTap: () {
-              Navigator.push(context,
-                  MaterialPageRoute(builder: (context) => const HelpPage()));
-            },
+          const SizedBox(height: AppSpacing.xl),
+          const SectionLabel('Préférences'),
+          AppCard(
+            padding: EdgeInsets.zero,
+            child: Column(
+              children: [
+                _MenuTile(
+                  icon: Icons.person_outline_rounded,
+                  label: 'Profil',
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const ProfilePage()),
+                  ),
+                ),
+                const _MenuDivider(),
+                _MenuTile(
+                  icon: Icons.tune_rounded,
+                  label: 'Paramètres',
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SettingsPage()),
+                  ),
+                ),
+                const _MenuDivider(),
+                _MenuTile(
+                  icon: Icons.help_outline_rounded,
+                  label: 'Aide',
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const HelpPage()),
+                  ),
+                ),
+              ],
+            ),
           ),
-          const Divider(color: Colors.white24),
-          ListTile(
-            leading: const Icon(Icons.logout, color: Colors.orange),
-            title: const Text('Déconnexion',
-                style: TextStyle(color: Colors.white)),
-            onTap: () => _confirmLogout(context),
+          const SizedBox(height: AppSpacing.xl),
+          AppCard(
+            padding: EdgeInsets.zero,
+            child: _MenuTile(
+              icon: Icons.logout_rounded,
+              label: 'Déconnexion',
+              tone: Tone.danger,
+              showChevron: false,
+              onTap: () => _confirmLogout(context),
+            ),
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Pastille d'initiales, affichée à défaut de photo de profil.
+class _Avatar extends StatelessWidget {
+  final String? name;
+
+  const _Avatar({this.name});
+
+  String get _initials {
+    final parts = (name ?? '').trim().split(RegExp(r'\s+'))
+      ..removeWhere((p) => p.isEmpty);
+    if (parts.isEmpty) return '?';
+    if (parts.length == 1) return parts.first.characters.first.toUpperCase();
+    return (parts.first.characters.first + parts.last.characters.first)
+        .toUpperCase();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 52,
+      height: 52,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFF8A3D), kBrand],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(AppRadius.md),
+      ),
+      child: Text(
+        _initials,
+        style: context.text.titleMedium?.copyWith(
+          color: context.colors.onBrand,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+}
+
+class _MenuTile extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final Tone tone;
+  final bool showChevron;
+
+  const _MenuTile({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.tone = Tone.neutral,
+    this.showChevron = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final fg = tone == Tone.danger ? c.danger : c.textPrimary;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.lg,
+            vertical: AppSpacing.lg,
+          ),
+          child: Row(
+            children: [
+              Icon(icon, size: 20, color: tone == Tone.danger ? c.danger : c.textSecondary),
+              const SizedBox(width: AppSpacing.md),
+              Expanded(
+                child: Text(
+                  label,
+                  style: context.text.bodyLarge?.copyWith(color: fg),
+                ),
+              ),
+              if (showChevron)
+                Icon(Icons.chevron_right_rounded, size: 20, color: c.textMuted),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MenuDivider extends StatelessWidget {
+  const _MenuDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 52),
+      child: Divider(height: 1, color: context.colors.border),
     );
   }
 }

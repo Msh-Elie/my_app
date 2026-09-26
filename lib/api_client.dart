@@ -5,13 +5,13 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// URL par défaut du backend.
-/// - Émulateur Android : http://10.0.2.2:3002 (redirige vers le PC hôte)
-/// - Téléphone physique : configurez l'IP Wi-Fi du PC dans Paramètres → Serveur
-///   (ex: http://192.168.1.50:3002) ou passez --dart-define=BACKEND_BASE=...
+/// URL par défaut du backend : instance Render, joignable depuis n'importe
+/// quel réseau (Wi-Fi ou 4G), aucune config manuelle nécessaire.
+/// Peut être surchargée à la compilation (--dart-define=BACKEND_BASE=...)
+/// ou à chaud dans l'app (Paramètres → Serveur backend) pour du dev local.
 const String kDefaultBackendBase = String.fromEnvironment(
   'BACKEND_BASE',
-  defaultValue: 'http://10.0.2.2:3002',
+  defaultValue: 'https://switchmoney-backend.onrender.com',
 );
 
 class AppUser {

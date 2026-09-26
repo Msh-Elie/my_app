@@ -8,6 +8,9 @@ import 'api_client.dart';
 import 'history_page.dart';
 import 'history_storage.dart';
 import 'menu_page.dart';
+import 'operators.dart';
+import 'theme.dart';
+import 'ui_kit.dart';
 
 // normalise une MSISDN PawaPay en supprimant le zéro national
 // juste après l'indicatif pays, s'il est présent.
@@ -282,16 +285,9 @@ String? prefixWarningForProvider(String provider, String input) {
 }
 
 class HomePage extends StatefulWidget {
-  final ThemeMode themeMode;
-  final ValueChanged<ThemeMode> onThemeChange;
   final VoidCallback? onLoggedOut;
 
-  const HomePage({
-    super.key,
-    required this.themeMode,
-    required this.onThemeChange,
-    this.onLoggedOut,
-  });
+  const HomePage({super.key, this.onLoggedOut});
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -355,6 +351,12 @@ Map<String, String> providerPrefixes = {
 // libellé -> code PawaPay exact (rempli par /api/providers)
 Map<String, String> providerCodes = {};
 
+// libellé -> l'opérateur sait-il *recevoir* un versement ?
+// Renseigné par /api/providers. Un opérateur peut être joignable à l'envoi
+// sans l'être à la réception : on refuse alors de le proposer en destination
+// plutôt que de laisser l'utilisateur échouer au dernier moment.
+Map<String, bool> providerPayoutCapable = {};
+
 /// Charge la liste des opérateurs réellement disponibles chez PawaPay.
 /// En cas d'échec (hors-ligne), la liste statique ci-dessus reste utilisée.
 Future<void> _loadProviders() async {
@@ -369,6 +371,7 @@ Future<void> _loadProviders() async {
     final newProviders = <String>[];
     final newPrefixes = <String, String>{};
     final newCodes = <String, String>{};
+    final newPayoutCapable = <String, bool>{};
     for (final p in list) {
       final label = p['label']?.toString() ?? '';
       final code = p['code']?.toString() ?? '';
@@ -377,6 +380,10 @@ Future<void> _loadProviders() async {
       newProviders.add(label);
       newPrefixes[label] = prefix;
       newCodes[label] = code;
+      // Absence de `capabilities` = ancien serveur : on suppose capable.
+      final caps = p['capabilities'];
+      newPayoutCapable[label] =
+          caps is Map ? caps['payout'] != false : true;
     }
     if (newProviders.isEmpty || !mounted) return;
 
@@ -384,6 +391,7 @@ Future<void> _loadProviders() async {
       providers = newProviders;
       providerPrefixes = newPrefixes;
       providerCodes = newCodes;
+      providerPayoutCapable = newPayoutCapable;
       if (!providers.contains(selectedFrom)) selectedFrom = providers.first;
       if (!providers.contains(selectedTo)) selectedTo = providers.first;
       _rememberOperatorSelection();
@@ -416,6 +424,9 @@ String? lastOperationDate;
 String? lastOperationFrom;
 String? lastOperationTo;
 String? lastOperationReceiver;
+/// Lien de paiement à ouvrir quand l'opérateur exige une validation sur
+/// une page externe (cas des rails hors PawaPay).
+String? lastOperationCheckoutUrl;
 
 String _resolvedSessionProvider(String provider) {
   return providers.contains(provider)
@@ -514,7 +525,7 @@ String get transferCurrency => getCurrencyForProvider(selectedFrom);
 
 String _buildAutoReceiverName() {
   final digits = digitsOnly(receiveController.text);
-  if (digits.isEmpty) return 'Beneficiaire en attente';
+  if (digits.isEmpty) return 'Bénéficiaire à renseigner';
   final networkLabel = selectedTo.split(' ').first;
   final signature = digits.length <= 4 ? digits : digits.substring(digits.length - 4);
   return 'Compte $networkLabel • $signature';
@@ -585,7 +596,7 @@ Future<void> _lookupRecipientIdentity() async {
   if (mounted) {
     setState(() {
       recipientLookupInFlight = true;
-      recipientLookupMessage = 'identification en cours';
+      recipientLookupMessage = 'Identification en cours…';
     });
   }
 
@@ -613,11 +624,11 @@ Future<void> _lookupRecipientIdentity() async {
       recipientNameResolved = resolved && displayName != null && displayName.isNotEmpty;
       resolvedRecipientName = displayName != null && displayName.isNotEmpty ? displayName : null;
       if (recipientNameResolved) {
-        recipientLookupMessage = 'destinataire: $displayName';
+        recipientLookupMessage = 'Bénéficiaire : $displayName';
       } else if (source == 'derived' && displayName != null && displayName.isNotEmpty) {
-        recipientLookupMessage = 'identite auto: $displayName';
+        recipientLookupMessage = 'Identité estimée : $displayName';
       } else {
-        recipientLookupMessage = 'identite automatique utilisee';
+        recipientLookupMessage = 'Identité non confirmée par l\'opérateur';
       }
     });
   } on TimeoutException {
@@ -626,7 +637,7 @@ Future<void> _lookupRecipientIdentity() async {
       recipientLookupInFlight = false;
       recipientNameResolved = false;
       resolvedRecipientName = null;
-      recipientLookupMessage = 'identite automatique utilisee';
+      recipientLookupMessage = 'Identité non confirmée par l\'opérateur';
     });
   } catch (_) {
     if (!mounted || currentVersion != recipientLookupVersion) return;
@@ -634,7 +645,7 @@ Future<void> _lookupRecipientIdentity() async {
       recipientLookupInFlight = false;
       recipientNameResolved = false;
       resolvedRecipientName = null;
-      recipientLookupMessage = 'identite automatique utilisee';
+      recipientLookupMessage = 'Identité non confirmée par l\'opérateur';
     });
   }
 }
@@ -658,7 +669,7 @@ void _scheduleRecipientLookup() {
 String get continueLabel {
   if (stepIndex == 4) return 'Nouveau transfert';
   if (stepIndex == 3) return 'Confirmer le transfert';
-  if (stepIndex == 2) return 'Voir le recapitulatif';
+  if (stepIndex == 2) return 'Voir le récapitulatif';
   return 'Continuer';
 }
 
@@ -684,6 +695,7 @@ void _captureOperationResult({
   required String amount,
   required String currency,
   required String message,
+  String? checkoutUrl,
 }) {
   lastOperationStatus = status;
   lastOperationTxId = txId;
@@ -697,6 +709,7 @@ void _captureOperationResult({
   lastOperationReceiver = recipientNameResolved
       ? '$resolvedRecipientDisplayName • $receiverPhonePreview'
       : receiverPhonePreview;
+  lastOperationCheckoutUrl = checkoutUrl;
 }
 
 /// Interroge le backend toutes les 3 s jusqu'à ce que PawaPay confirme
@@ -757,6 +770,7 @@ void _resetTransferFlow() {
     lastOperationFrom = null;
     lastOperationTo = null;
     lastOperationReceiver = null;
+    lastOperationCheckoutUrl = null;
   });
 }
 
@@ -774,7 +788,7 @@ String? get sendNumberWarning {
 String? get sendNumberSuccess {
   if (stepIndex != 1 || sendController.text.trim().isEmpty) return null;
   if (sendNumberError != null || sendNumberWarning != null) return null;
-  return 'Numero correct pour $selectedFrom';
+  return 'Numéro valide pour $selectedFrom';
 }
 
 String? get receiveNumberError {
@@ -791,697 +805,122 @@ String? get receiveNumberWarning {
 String? get receiveNumberSuccess {
   if (stepIndex != 1 || receiveController.text.trim().isEmpty) return null;
   if (receiveNumberError != null || receiveNumberWarning != null) return null;
-  return 'Numero correct pour $selectedTo';
+  return 'Numéro valide pour $selectedTo';
 }
+
+// =========================================================================
+// Interface
+// =========================================================================
+
+/// Libellés des étapes du tunnel de transfert, affichés par [StepProgress].
+static const List<String> _stepLabels = [
+  'Choix des opérateurs',
+  'Numéros de téléphone',
+  'Montant à envoyer',
+  'Vérification finale',
+];
+
+/// L'opérateur de destination sait-il recevoir un versement ?
+///
+/// Renseigné par `/api/providers` (champ `capabilities.payout`). Certains
+/// opérateurs sont joignables à l'envoi sans l'être à la réception : mieux
+/// vaut le dire ici que laisser l'utilisateur aller au bout du tunnel pour
+/// se faire refuser au moment de l'envoi.
+bool get destinationCanReceive => providerPayoutCapable[selectedTo] ?? true;
 
 @override
 Widget build(BuildContext context) {
-const double spacingTitleToContent = 0;
+  final c = context.colors;
 
-return Scaffold(
-backgroundColor: Colors.black,
-resizeToAvoidBottomInset: false,
-bottomNavigationBar: inProgress ? Container(
-  color: Colors.grey[900],
-  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-  child: Row(
-    children: [
-      Expanded(
-        child: Text(progressText, style: const TextStyle(color: Colors.white)),
+  return Scaffold(
+    resizeToAvoidBottomInset: false,
+    body: SafeArea(
+      child: Column(
+        children: [
+          _buildHeader(),
+          _buildTabs(),
+          Expanded(
+            child: selectedTab == 0 ? _buildTransferTab() : const HistoryContent(embedded: true),
+          ),
+          if (selectedTab == 0) _buildBottomBar(),
+        ],
       ),
-      SizedBox(
-        width: 24,
-        height: 24,
-        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.orange),
-      ),
-    ],
-  ),
-) : null,
-body: SafeArea(
-child: Column(
-  children: [
-    Padding(
-      padding: const EdgeInsets.only(top: 8, right: 16),
-      child: Align(
-        alignment: Alignment.topRight,
-        child: IconButton(
-          icon: const Icon(Icons.account_circle_outlined, size: 28, color: Colors.white),
-          onPressed: () {
+    ),
+    bottomNavigationBar: inProgress
+        ? Container(
+            color: c.surface,
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.lg,
+              AppSpacing.md,
+              AppSpacing.lg,
+              AppSpacing.md,
+            ),
+            child: SafeArea(
+              top: false,
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: c.brand),
+                  ),
+                  const SizedBox(width: AppSpacing.md),
+                  Expanded(
+                    child: Text(
+                      progressText,
+                      style: context.text.bodyMedium?.copyWith(color: c.textPrimary),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          )
+        : null,
+  );
+}
+
+/// En-tête : signature de l'application à gauche, accès au compte à droite.
+Widget _buildHeader() {
+  final c = context.colors;
+  final user = ApiClient.instance.user;
+  final initial = (user?.name.trim().isNotEmpty ?? false)
+      ? user!.name.trim().characters.first.toUpperCase()
+      : '?';
+
+  return Padding(
+    padding: const EdgeInsets.fromLTRB(
+      AppSpacing.lg,
+      AppSpacing.md,
+      AppSpacing.md,
+      AppSpacing.sm,
+    ),
+    child: Row(
+      children: [
+        const BrandMark(size: 34),
+        const Spacer(),
+        GestureDetector(
+          onTap: () {
             Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (context) => MenuPage(
-                  themeMode: widget.themeMode,
-                  onThemeChanged: widget.onThemeChange,
-                  onLoggedOut: widget.onLoggedOut,
-                ),
+                builder: (context) => MenuPage(onLoggedOut: widget.onLoggedOut),
               ),
-            );
+            ).then((_) {
+              if (mounted) setState(() {});
+            });
           },
-        ),
-      ),
-    ),
-    const SizedBox(height: 20),
-
-    Center(child: buildCustomTabBar()),
-    const SizedBox(height: 20),
-
-    Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          if (selectedTab == 0 && stepIndex > 0 && stepIndex < 4) Align(
-            alignment: Alignment.centerLeft,
-            child: IconButton(
-              icon: const Icon(
-                Icons.chevron_left,
-                size: 22,
-                color: Colors.white,
-              ),
-              onPressed: () {
-                if (stepIndex > 0) {
-                  final newStep = stepIndex - 1;
-                  if (newStep == 0) {
-                    // Les roues sont hors du tree (step > 0) donc les controllers
-                    // n'ont aucune position attachée : on peut les recréer
-                    // avec le bon initialItem avant le rebuild.
-                    final fi = providers.indexOf(selectedFrom).clamp(0, providers.length - 1);
-                    final ti = providers.indexOf(selectedTo).clamp(0, providers.length - 1);
-                    fromController.dispose();
-                    toController.dispose();
-                    fromController = FixedExtentScrollController(initialItem: fi);
-                    toController = FixedExtentScrollController(initialItem: ti);
-                  }
-                  setState(() { stepIndex = newStep; });
-                }
-              },
+          child: Container(
+            width: 38,
+            height: 38,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: c.surface,
+              shape: BoxShape.circle,
+              border: Border.all(color: c.border),
             ),
-          ),
-          Center(
             child: Text(
-              selectedTab == 0 ? "Transfert" : "Historique",
-              style: const TextStyle(
-                fontSize: 28,
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
-              ),
-            ),
-          ),
-        ],
-      ),
-    ),
-
-    SizedBox(height: spacingTitleToContent),
-
-    Expanded(
-      child: selectedTab == 0
-          ? LayoutBuilder(
-              builder: (context, constraints) {
-                return AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 420),
-                  switchInCurve: Curves.easeOut,
-                  switchOutCurve: Curves.easeIn,
-                  transitionBuilder: (child, animation) {
-                    final offset = Tween<Offset>(
-                      begin: const Offset(1.0, 0),
-                      end: Offset.zero,
-                    ).animate(animation);
-                    return SlideTransition(position: offset, child: child);
-                  },
-                  child: SizedBox(
-                    key: ValueKey(stepIndex),
-                    width: double.infinity,
-                    child: Transform.translate(
-                      offset: const Offset(0, -8),
-                      child: _buildStepContent(),
-                    ),
-                  ),
-                );
-              },
-            )
-          : const HistoryContent(embedded: true),
-    ),
-
-    if (selectedTab == 0 && stepIndex < 3) ...[
-      Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          RichText(
-            text: TextSpan(
-              style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w500,
-                color: Colors.white,
-              ),
-              children: [
-                TextSpan(text: selectedFrom),
-                WidgetSpan(
-                  child: Baseline(
-                    baseline: 18,
-                    baselineType: TextBaseline.alphabetic,
-                    child: Text(
-                      "→",
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w600,
-                        color: Color(0xFFFE6F0B),
-                      ),
-                    ),
-                  ),
-                ),
-                TextSpan(text: selectedTo),
-              ],
-            ),
-          ),
-        ],
-      ),
-      const SizedBox(height: 22),
-    ],
-
-    if (selectedTab == 0)
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        child: ElevatedButton(
-          style: ElevatedButton.styleFrom(
-            backgroundColor: isContinueActive
-              ? (stepIndex >= 3 ? const Color(0xFFFE6F0B) : Colors.white)
-                : Colors.grey,
-            foregroundColor: Colors.black,
-            padding: const EdgeInsets.symmetric(horizontal: 70, vertical: 16),
-            minimumSize: const Size(280, 30),
-            shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(30)),
-            textStyle: const TextStyle(
-                fontSize: 20, fontWeight: FontWeight.bold),
-          ),
-          onPressed: isContinueActive
-? () {
-if (stepIndex == 4) {
-  _resetTransferFlow();
-  return;
-}
-_onContinuePressed(
-  context: context,
-  stepIndex: stepIndex,
-  setStepIndex: (i) => setState(() => stepIndex = i),
-  amountController: amountController,
-  sendController: sendController,
-  receiveController: receiveController,
-  selectedFrom: selectedFrom,
-  selectedTo: selectedTo,
-);
-}
-: null,
-
-          child: Text(continueLabel),
-        ),
-      ),
-    if (selectedTab == 0) const SizedBox(height: 20),
-
-    if (selectedTab == 0 && stepIndex < 3)
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-        width: double.infinity,
-        color: Colors.black,
-        child: const Text(
-          "By continuing, you agree to our Terms of Use and have read and agreed to our Privacy Policy",
-          textAlign: TextAlign.center,
-          style: TextStyle(color: Colors.white, fontSize: 12),
-        ),
-      ),
-  ],
-),
-),
-);
-}
-
-Widget _buildStepContent() {
-if (stepIndex == 4) {
-return _buildOperationResultStep();
-}
-if (stepIndex == 3) {
-return _buildConfirmationStep();
-}
-
-if (stepIndex == 2) {
-final frais = transferFee;
-final net = payoutAmount;
-
-// Obtenir les devises pour les providers sélectionnés
-String fromCurrency = transferCurrency;
-
-// Pour l'instant, on utilise la devise du pays d'origine
-String displayCurrency = fromCurrency;
-
-const double fieldWidth = 300;
-const double horizontalPadding = 12;
-
-return SizedBox(
-key: const ValueKey('montant'),
-height: 180,
-child: Column(
-  mainAxisAlignment: MainAxisAlignment.center,
-  children: [
-    // Champ centré avec devise dynamique
-    Center(
-      child: SizedBox(
-        width: fieldWidth,
-        child: TextField(
-          controller: amountController,
-          keyboardType: TextInputType.number,
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-            fontSize: 18,
-          ),
-          decoration: InputDecoration(
-            labelText: "Montant",
-            labelStyle: const TextStyle(
-              color: Colors.white70,
-              fontWeight: FontWeight.w500,
-            ),
-            suffixText: displayCurrency, // Devise dynamique
-            suffixStyle: const TextStyle(
-              color: Color(0xFFFE6F0B),
-              fontWeight: FontWeight.bold,
-            ),
-            filled: true,
-            fillColor: const Color(0xFF1C1C1C),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: Color(0xFFFE6F0B)),
-            ),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: Color(0xFFFE6F0B)),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(8),
-              borderSide: const BorderSide(color: Color(0xFFFE6F0B), width: 2),
-            ),
-            contentPadding: const EdgeInsets.symmetric(vertical: 16, horizontal: horizontalPadding),
-          ),
-          onChanged: (_) => setState(() {}),
-        ),
-      ),
-    ),
-    const SizedBox(height: 12),
-    // Textes alignés à gauche du champ avec devise dynamique
-    if (amountController.text.trim().isNotEmpty) ...[
-      Padding(
-        padding: const EdgeInsets.only(left: horizontalPadding),
-        child: SizedBox(
-          width: fieldWidth,
-          child: Text(
-            "Frais : ${frais.toStringAsFixed(0)} $displayCurrency",
-            style: const TextStyle(
-              color: Colors.grey,
-              fontSize: 12,
-            ),
-          ),
-        ),
-      ),
-      const SizedBox(height: 4),
-      Padding(
-        padding: const EdgeInsets.only(left: horizontalPadding),
-        child: SizedBox(
-          width: fieldWidth,
-          child: Text(
-            "Montant net : ${net.toStringAsFixed(0)} $displayCurrency",
-            style: const TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
-      ),
-    ],
-  ],
-),
-);
-}
-
-return stepIndex == 0
-? SizedBox(
-key: const ValueKey('wheels'),
-height: 200,
-child: buildWheels(
-fromController,
-toController,
-selectedFrom,
-selectedTo,
-    (from) => setState(() {
-      selectedFrom = from;
-      _rememberOperatorSelection();
-    }),
-    (to) => setState(() {
-      selectedTo = to;
-      _rememberOperatorSelection();
-      _resetRecipientLookup();
-    }),
-),
-)
-: SizedBox(
-key: const ValueKey('inputs'),
-height: 270,
-child: Column(
-mainAxisAlignment: MainAxisAlignment.center,
-children: [
-  SizedBox(
-    width: 300,
-    child: CustomInputFieldWithFixedPrefix(
-      label: "Numéro d'envoi",
-      prefix: providerPrefixes[selectedFrom] ?? "+XXX",
-      controller: sendController,
-      errorText: sendNumberError,
-      helperText: sendNumberWarning ??
-          sendNumberSuccess ??
-          numberHintForProvider(selectedFrom),
-      helperIsSuccess: sendNumberSuccess != null,
-      helperIsWarning: sendNumberWarning != null,
-      maxLength: selectedFrom.endsWith('BJ') ? 10 : 10,
-      onChanged: (_) => setState(() {}),
-    ),
-  ),
-  const SizedBox(height: 30),
-  SizedBox(
-    width: 300,
-    child: CustomInputFieldWithFixedPrefix(
-      label: "Numéro de réception",
-      prefix: providerPrefixes[selectedTo] ?? "+XXX",
-      controller: receiveController,
-      errorText: receiveNumberError,
-      // le résultat du lookup (nom du bénéficiaire) prime sur le message générique
-      helperText: recipientLookupMessage ??
-          receiveNumberWarning ??
-          receiveNumberSuccess ??
-          numberHintForProvider(selectedTo),
-      helperIsSuccess: recipientNameResolved ||
-          (recipientLookupMessage == null && receiveNumberSuccess != null),
-      helperIsWarning:
-          recipientLookupMessage == null && receiveNumberWarning != null,
-      maxLength: selectedTo.endsWith('BJ') ? 10 : 10,
-      onChanged: (_) {
-        setState(() {});
-        _scheduleRecipientLookup();
-      },
-    ),
-  ),
-],
-),
-);
-}
-
-Widget _buildConfirmationStep() {
-final amount = enteredAmount;
-final fee = transferFee;
-final payout = payoutAmount;
-final currency = transferCurrency;
-final receiverPhone = _formatPhonePreview(selectedTo, receiveController.text);
-final senderPhone = _formatPhonePreview(selectedFrom, sendController.text);
-
-return SingleChildScrollView(
-  key: const ValueKey('confirmation'),
-  padding: const EdgeInsets.fromLTRB(20, 6, 20, 12),
-  child: Column(
-    children: [
-      Container(
-        width: double.infinity,
-        constraints: const BoxConstraints(maxWidth: 560),
-        padding: const EdgeInsets.all(1.2),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(30),
-          gradient: const LinearGradient(
-            colors: [Color(0xFFFE6F0B), Color(0x66FE6F0B), Color(0x22FFFFFF)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          boxShadow: const [
-            BoxShadow(
-              color: Color(0x33FE6F0B),
-              blurRadius: 28,
-              spreadRadius: 2,
-              offset: Offset(0, 10),
-            ),
-          ],
-        ),
-        child: Container(
-          decoration: BoxDecoration(
-            color: const Color(0xFF0B0B0B),
-            borderRadius: BorderRadius.circular(29),
-          ),
-          child: Stack(
-            children: [
-              Positioned(
-                top: -20,
-                right: -10,
-                child: Container(
-                  width: 120,
-                  height: 120,
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: RadialGradient(
-                      colors: [Color(0x44FE6F0B), Color(0x00FE6F0B)],
-                    ),
-                  ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(22, 24, 22, 24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          width: 46,
-                          height: 46,
-                          decoration: BoxDecoration(
-                            color: const Color(0x22FE6F0B),
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: const Icon(Icons.verified_user_outlined, color: Color(0xFFFE6F0B)),
-                        ),
-                        const SizedBox(width: 14),
-                        const Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Confirmation finale',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 24,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                              SizedBox(height: 4),
-                              Text(
-                                'Verifie les informations avant d\'envoyer le transfert.',
-                                style: TextStyle(
-                                  color: Colors.white60,
-                                  fontSize: 13,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 22),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(18),
-                      decoration: BoxDecoration(
-                        color: const Color(0x14FFFFFF),
-                        borderRadius: BorderRadius.circular(24),
-                        border: Border.all(color: const Color(0x22FFFFFF)),
-                      ),
-                      child: Column(
-                        children: [
-                          // Identité du bénéficiaire mise en avant (façon MTN MoMo)
-                          Container(
-                            width: 54,
-                            height: 54,
-                            decoration: const BoxDecoration(
-                              color: Color(0x22FE6F0B),
-                              shape: BoxShape.circle,
-                            ),
-                            child: const Icon(Icons.person,
-                                color: Color(0xFFFE6F0B), size: 30),
-                          ),
-                          const SizedBox(height: 10),
-                          Text(
-                            resolvedRecipientDisplayName,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 18,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            receiverPhone,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                                color: Colors.white70, fontSize: 13),
-                          ),
-                          const SizedBox(height: 10),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: recipientNameResolved
-                                  ? const Color(0x2233D17A)
-                                  : const Color(0x22FFB74D),
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Text(
-                              recipientNameResolved
-                                  ? 'Nom vérifié'
-                                  : 'Identité non confirmée',
-                              style: TextStyle(
-                                color: recipientNameResolved
-                                    ? const Color(0xFF33D17A)
-                                    : const Color(0xFFFFB74D),
-                                fontWeight: FontWeight.w700,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ),
-                          const Padding(
-                            padding: EdgeInsets.symmetric(vertical: 12),
-                            child:
-                                Divider(color: Color(0x22FFFFFF), height: 1),
-                          ),
-                          _buildConfirmationRow('Reseau', selectedTo, compact: true, allowWrap: true),
-                          _buildConfirmationRow('Expediteur', senderPhone, compact: true, allowWrap: true),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF121212),
-                        borderRadius: BorderRadius.circular(24),
-                      ),
-                      child: Column(
-                        children: [
-                          Row(
-                            children: [
-                              const Text(
-                                'Montant qui sera debourse',
-                                style: TextStyle(color: Colors.white70, fontSize: 13),
-                              ),
-                              const Spacer(),
-                              Text(
-                                '${amount.toStringAsFixed(0)} $currency',
-                                style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 14),
-                          _buildConfirmationRow('Frais', '${fee.toStringAsFixed(0)} $currency'),
-                          _buildConfirmationRow('Montant net', '${payout.toStringAsFixed(0)} $currency'),
-                          const Padding(
-                            padding: EdgeInsets.symmetric(vertical: 14),
-                            child: Divider(color: Color(0x22FFFFFF), height: 1),
-                          ),
-                          Row(
-                            children: [
-                              const Expanded(
-                                child: Text(
-                                  'Derniere verification requise',
-                                  style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700),
-                                ),
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                decoration: BoxDecoration(
-                                  color: recipientNameResolved ? const Color(0x2233D17A) : const Color(0x22FE6F0B),
-                                  borderRadius: BorderRadius.circular(30),
-                                ),
-                                child: Text(
-                                  recipientNameResolved ? 'Nom verifie' : 'Secure check',
-                                  style: TextStyle(
-                                    color: recipientNameResolved ? const Color(0xFF33D17A) : const Color(0xFFFE6F0B),
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                      decoration: BoxDecoration(
-                        color: const Color(0x11FE6F0B),
-                        borderRadius: BorderRadius.circular(18),
-                        border: Border.all(color: const Color(0x22FE6F0B)),
-                      ),
-                      child: const Row(
-                        children: [
-                          Icon(Icons.info_outline, color: Color(0xFFFE6F0B), size: 18),
-                          SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              'Verifie les informations du beneficiaire avant validation finale.',
-                              style: TextStyle(color: Colors.white70, fontSize: 12.5),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    ],
-  ),
-);
-}
-
-Widget _buildConfirmationRow(
-  String label,
-  String value, {
-  bool compact = false,
-  bool allowWrap = false,
-  double? valueFontSize,
-}) {
-  return Padding(
-    padding: const EdgeInsets.symmetric(vertical: 6),
-    child: Row(
-      children: [
-        Expanded(
-          child: Text(
-            label,
-            style: const TextStyle(color: Colors.white54, fontSize: 13),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Flexible(
-          child: Text(
-            value,
-            maxLines: allowWrap ? 2 : 1,
-            overflow: allowWrap ? TextOverflow.visible : TextOverflow.ellipsis,
-            softWrap: allowWrap,
-            textAlign: TextAlign.right,
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: valueFontSize ?? (compact ? 11 : 14),
-              fontWeight: FontWeight.w700,
+              initial,
+              style: context.text.titleSmall?.copyWith(color: c.textSecondary),
             ),
           ),
         ),
@@ -1490,138 +929,59 @@ Widget _buildConfirmationRow(
   );
 }
 
-Widget _buildOperationResultStep() {
-  final status = lastOperationStatus ?? 'en_cours';
-  final isSuccess = status == 'valide';
-  final isFailure = status == 'echec';
-  final statusLabel = isSuccess
-      ? 'Operation validee'
-      : isFailure
-          ? 'Operation echouee'
-          : 'Operation en cours';
-  final statusColor = isSuccess
-      ? const Color(0xFF33D17A)
-      : isFailure
-          ? const Color(0xFFFF5252)
-          : const Color(0xFFFFB06D);
+/// Onglets Transfert / Historique.
+///
+/// L'indicateur est dessiné en code et animé : l'image `underline.png`
+/// étirée sous l'onglet actif était l'un des détails qui trahissaient le
+/// prototype.
+Widget _buildTabs() {
+  final c = context.colors;
 
-  return SingleChildScrollView(
-    key: const ValueKey('operation_result'),
-    padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
-    child: TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0.0, end: 1.0),
-      duration: const Duration(milliseconds: 600),
-      curve: Curves.easeOutCubic,
-      builder: (context, value, child) {
-        return Opacity(
-          opacity: value,
-          child: Transform.scale(
-            scale: 0.92 + (value * 0.08),
-            child: child,
-          ),
-        );
+  return Padding(
+    padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
+    child: Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: c.surfaceMuted,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+      ),
+      child: Row(
+        children: [
+          _buildTabItem('Transfert', 0),
+          _buildTabItem('Historique', 1),
+        ],
+      ),
+    ),
+  );
+}
+
+Widget _buildTabItem(String title, int index) {
+  final c = context.colors;
+  final isActive = selectedTab == index;
+
+  return Expanded(
+    child: GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () {
+        setState(() {
+          selectedTab = index;
+          tabController.animateTo(index);
+        });
       },
-      child: Container(
-        width: double.infinity,
-        constraints: const BoxConstraints(maxWidth: 560),
-        padding: const EdgeInsets.all(1.2),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+        padding: const EdgeInsets.symmetric(vertical: 10),
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(28),
-          gradient: const LinearGradient(
-            colors: [Color(0xFFFE6F0B), Color(0x44FE6F0B), Color(0x11FE6F0B)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-          boxShadow: const [
-            BoxShadow(
-              color: Color(0x22FE6F0B),
-              blurRadius: 24,
-              offset: Offset(0, 8),
-            ),
-          ],
+          color: isActive ? c.surface : Colors.transparent,
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          boxShadow: isActive ? c.cardShadow : null,
         ),
-        child: Container(
-          decoration: BoxDecoration(
-            color: const Color(0xFF0A0A0A),
-            borderRadius: BorderRadius.circular(27),
-          ),
-          padding: const EdgeInsets.fromLTRB(20, 22, 20, 20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  _buildStatusIconWithAnimation(isSuccess, statusColor,
-                      isFailure: isFailure),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Confirmation operation',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          statusLabel,
-                          style: TextStyle(
-                            color: statusColor,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 18),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF141414),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: const Color(0x22FFFFFF)),
-                ),
-                child: Column(
-                  children: [
-                    _buildConfirmationRow('Transaction ID', lastOperationTxId ?? '-', valueFontSize: 13),
-                    _buildConfirmationRow('Date', lastOperationDate ?? '-', valueFontSize: 13),
-                    _buildConfirmationRow('Receveur', lastOperationReceiver ?? '-', compact: true, allowWrap: true),
-                    _buildConfirmationRow('Reseau', '${lastOperationFrom ?? '-'} -> ${lastOperationTo ?? '-'}', compact: true, allowWrap: true),
-                    _buildConfirmationRow(
-                      'Montant',
-                      '${lastOperationAmount ?? '-'} ${lastOperationCurrency ?? ''}'.trim(),
-                      valueFontSize: 13,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 14),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                decoration: BoxDecoration(
-                  color: const Color(0x11FE6F0B),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: const Color(0x33FE6F0B)),
-                ),
-                child: Text(
-                  lastOperationMessage ?? 'Votre operation a été enregistree.',
-                  style: const TextStyle(
-                    color: Color(0xFFE7E7E7),
-                    fontSize: 13,
-                    height: 1.3,
-                  ),
-                ),
-              ),
-            ],
+        child: Text(
+          title,
+          textAlign: TextAlign.center,
+          style: context.text.titleSmall?.copyWith(
+            color: isActive ? c.textPrimary : c.textMuted,
           ),
         ),
       ),
@@ -1629,77 +989,850 @@ Widget _buildOperationResultStep() {
   );
 }
 
-Widget _buildStatusIconWithAnimation(bool isSuccess, Color statusColor,
-    {bool isFailure = false}) {
-  if (isFailure) {
-    return Container(
-      width: 52,
-      height: 52,
-      decoration: BoxDecoration(
-        color: const Color(0x22FF5252),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0x44FF5252)),
-      ),
-      child: Icon(Icons.close_rounded, color: statusColor, size: 30),
-    );
-  }
-  if (isSuccess) {
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0.0, end: 1.0),
-      duration: const Duration(milliseconds: 1100),
-      curve: Curves.easeOutCubic,
-      builder: (context, value, child) {
-        final iconOpacity = ((value - 0.62) / 0.38).clamp(0.0, 1.0);
-        return Container(
-          width: 52,
-          height: 52,
-          decoration: BoxDecoration(
-            color: const Color(0x22FE6F0B),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: const Color(0x44FE6F0B)),
+/// Onglet « Transfert » : progression, trajet, contenu de l'étape.
+Widget _buildTransferTab() {
+  final showFlowChrome = stepIndex < 4;
+
+  return Column(
+    children: [
+      if (showFlowChrome)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg,
+            AppSpacing.lg,
+            AppSpacing.lg,
+            0,
           ),
-          child: Stack(
-            alignment: Alignment.center,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              SizedBox(
-                width: 30,
-                height: 30,
-                child: CircularProgressIndicator(
-                  value: value,
-                  strokeWidth: 3,
-                  backgroundColor: const Color(0x22FFFFFF),
-                  valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF33D17A)),
+              if (stepIndex > 0)
+                Padding(
+                  padding: const EdgeInsets.only(right: AppSpacing.sm),
+                  child: _BackChip(onTap: _goToPreviousStep),
                 ),
-              ),
-              Opacity(
-                opacity: iconOpacity,
-                child: const Icon(
-                  Icons.check_rounded,
-                  color: Color(0xFF33D17A),
-                  size: 28,
+              Expanded(
+                child: StepProgress(
+                  currentStep: stepIndex,
+                  totalSteps: 4,
+                  labels: _stepLabels,
                 ),
               ),
             ],
           ),
+        ),
+      if (showFlowChrome && stepIndex > 0)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg,
+            AppSpacing.lg,
+            AppSpacing.lg,
+            0,
+          ),
+          child: _buildRouteSummary(),
+        ),
+      Expanded(
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 320),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeIn,
+          transitionBuilder: (child, animation) {
+            return FadeTransition(
+              opacity: animation,
+              child: SlideTransition(
+                position: Tween<Offset>(
+                  begin: const Offset(0.06, 0),
+                  end: Offset.zero,
+                ).animate(animation),
+                child: child,
+              ),
+            );
+          },
+          child: SizedBox(
+            key: ValueKey(stepIndex),
+            width: double.infinity,
+            child: _buildStepContent(),
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+void _goToPreviousStep() {
+  if (stepIndex <= 0) return;
+  final newStep = stepIndex - 1;
+  if (newStep == 0) {
+    // Les roues sont hors du tree (step > 0) donc les controllers n'ont
+    // aucune position attachée : on peut les recréer avec le bon
+    // initialItem avant le rebuild.
+    final fi = providers.indexOf(selectedFrom).clamp(0, providers.length - 1);
+    final ti = providers.indexOf(selectedTo).clamp(0, providers.length - 1);
+    fromController.dispose();
+    toController.dispose();
+    fromController = FixedExtentScrollController(initialItem: fi);
+    toController = FixedExtentScrollController(initialItem: ti);
+  }
+  setState(() => stepIndex = newStep);
+}
+
+/// Rappel permanent du trajet choisi : « MTN BJ → MOOV BJ ».
+Widget _buildRouteSummary() {
+  final c = context.colors;
+
+  return Container(
+    padding: const EdgeInsets.symmetric(
+      horizontal: AppSpacing.md,
+      vertical: AppSpacing.md,
+    ),
+    decoration: BoxDecoration(
+      color: c.surface,
+      borderRadius: BorderRadius.circular(AppRadius.md),
+      border: Border.all(color: c.border),
+    ),
+    child: Row(
+      children: [
+        OperatorAvatar(label: selectedFrom, size: 32),
+        const SizedBox(width: AppSpacing.sm),
+        Expanded(child: _RouteEnd(label: 'Depuis', value: selectedFrom)),
+        Container(
+          width: 26,
+          height: 26,
+          margin: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
+          decoration: BoxDecoration(
+            color: c.brandSurface,
+            shape: BoxShape.circle,
+          ),
+          child: Icon(Icons.arrow_forward_rounded, size: 14, color: c.brandText),
+        ),
+        Expanded(
+          child: _RouteEnd(
+            label: 'Vers',
+            value: selectedTo,
+            alignEnd: true,
+          ),
+        ),
+        const SizedBox(width: AppSpacing.sm),
+        OperatorAvatar(label: selectedTo, size: 32),
+      ],
+    ),
+  );
+}
+
+Widget _buildStepContent() {
+  return switch (stepIndex) {
+    4 => _buildResultStep(),
+    3 => _buildConfirmationStep(),
+    2 => _buildAmountStep(),
+    1 => _buildNumbersStep(),
+    _ => _buildOperatorStep(),
+  };
+}
+
+// ---- Étape 0 : choix des opérateurs -------------------------------------
+
+Widget _buildOperatorStep() {
+  final c = context.colors;
+
+  return SingleChildScrollView(
+    key: const ValueKey('operators'),
+    padding: const EdgeInsets.fromLTRB(
+      AppSpacing.lg,
+      AppSpacing.lg,
+      AppSpacing.lg,
+      AppSpacing.lg,
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('D\'où vers où ?', style: context.text.headlineSmall),
+        const SizedBox(height: AppSpacing.xs),
+        Text(
+          'Faites défiler pour choisir l\'opérateur de départ et celui d\'arrivée.',
+          style: context.text.bodyMedium,
+        ),
+        const SizedBox(height: AppSpacing.lg),
+        AppCard(
+          padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text('DEPUIS',
+                        textAlign: TextAlign.center,
+                        style: context.text.labelSmall),
+                  ),
+                  Expanded(
+                    child: Text('VERS',
+                        textAlign: TextAlign.center,
+                        style: context.text.labelSmall),
+                  ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              SizedBox(height: 180, child: _buildWheels()),
+            ],
+          ),
+        ),
+        if (!destinationCanReceive) ...[
+          const SizedBox(height: AppSpacing.md),
+          InfoBanner(
+            message: '$selectedTo ne peut pas encore recevoir de transfert. '
+                'Choisissez un autre opérateur de destination.',
+            tone: Tone.warning,
+            icon: Icons.block_rounded,
+          ),
+        ],
+        const SizedBox(height: AppSpacing.md),
+        Row(
+          children: [
+            Icon(Icons.lock_outline_rounded, size: 14, color: c.textMuted),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                'Opérateurs fournis en direct par les réseaux partenaires.',
+                style: context.text.bodySmall,
+              ),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+}
+
+/// Les deux roues de sélection, avec un bandeau de sélection et un dégradé
+/// haut/bas qui fait « disparaître » les éléments non sélectionnés.
+Widget _buildWheels() {
+  final c = context.colors;
+
+  return Stack(
+    alignment: Alignment.center,
+    children: [
+      // Bandeau de sélection
+      Container(
+        height: 44,
+        margin: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+        decoration: BoxDecoration(
+          color: c.brandSurface,
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          border: Border.all(color: c.brandBorder),
+        ),
+      ),
+      Row(
+        children: [
+          Expanded(
+            child: _buildWheel(
+              controller: fromController,
+              selected: selectedFrom,
+              onChanged: (v) => setState(() {
+                selectedFrom = v;
+                _rememberOperatorSelection();
+              }),
+            ),
+          ),
+          Expanded(
+            child: _buildWheel(
+              controller: toController,
+              selected: selectedTo,
+              onChanged: (v) => setState(() {
+                selectedTo = v;
+                _rememberOperatorSelection();
+                _resetRecipientLookup();
+              }),
+            ),
+          ),
+        ],
+      ),
+      // Estompe haut/bas
+      Positioned.fill(
+        child: IgnorePointer(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  c.surface,
+                  c.surface.withValues(alpha: 0),
+                  c.surface.withValues(alpha: 0),
+                  c.surface,
+                ],
+                stops: const [0.0, 0.26, 0.74, 1.0],
+              ),
+            ),
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+Widget _buildWheel({
+  required FixedExtentScrollController controller,
+  required String selected,
+  required ValueChanged<String> onChanged,
+}) {
+  final c = context.colors;
+
+  return ListWheelScrollView.useDelegate(
+    controller: controller,
+    itemExtent: 44,
+    physics: const FixedExtentScrollPhysics(),
+    overAndUnderCenterOpacity: 0.55,
+    perspective: 0.002,
+    diameterRatio: 1.8,
+    onSelectedItemChanged: (index) {
+      if (index < 0 || index >= providers.length) return;
+      onChanged(providers[index]);
+    },
+    childDelegate: ListWheelChildBuilderDelegate(
+      builder: (context, index) {
+        if (index < 0 || index >= providers.length) return null;
+        final label = providers[index];
+        final isSelected = label == selected;
+        // Le logo accompagne le nom : on reconnaît son opérateur avant
+        // d'avoir fini de lire, et la roue cesse d'être un mur de texte.
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                // Pas d'opacité supplémentaire ici : la roue estompe déjà les
+                // éléments hors du centre (overAndUnderCenterOpacity), et les
+                // deux atténuations cumulées effaçaient les logos.
+                OperatorAvatar(label: label, size: isSelected ? 26 : 22),
+                const SizedBox(width: AppSpacing.sm),
+                Flexible(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: isSelected ? 15 : 13.5,
+                      fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                      letterSpacing: -0.2,
+                      color: isSelected ? c.textPrimary : c.textMuted,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         );
       },
-    );
-  } else {
-    return Container(
-      width: 52,
-      height: 52,
-      decoration: BoxDecoration(
-        color: const Color(0x22FE6F0B),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0x44FE6F0B)),
-      ),
-      child: Icon(
-        Icons.schedule,
-        color: statusColor,
-        size: 30,
-      ),
-    );
-  }
+      childCount: providers.length,
+    ),
+  );
+}
+
+// ---- Étape 1 : numéros ---------------------------------------------------
+
+Widget _buildNumbersStep() {
+  return SingleChildScrollView(
+    key: const ValueKey('numbers'),
+    padding: const EdgeInsets.fromLTRB(
+      AppSpacing.lg,
+      AppSpacing.lg,
+      AppSpacing.lg,
+      AppSpacing.lg,
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Les numéros', style: context.text.headlineSmall),
+        const SizedBox(height: AppSpacing.xs),
+        Text(
+          'Le numéro qui envoie, puis celui qui reçoit.',
+          style: context.text.bodyMedium,
+        ),
+        const SizedBox(height: AppSpacing.lg),
+        CustomInputFieldWithFixedPrefix(
+          label: 'Numéro d\'envoi',
+          prefix: providerPrefixes[selectedFrom] ?? '+XXX',
+          controller: sendController,
+          errorText: sendNumberError,
+          helperText: sendNumberWarning ??
+              sendNumberSuccess ??
+              numberHintForProvider(selectedFrom),
+          helperIsSuccess: sendNumberSuccess != null,
+          helperIsWarning: sendNumberWarning != null,
+          maxLength: 10,
+          onChanged: (_) => setState(() {}),
+        ),
+        const SizedBox(height: AppSpacing.lg),
+        CustomInputFieldWithFixedPrefix(
+          label: 'Numéro de réception',
+          prefix: providerPrefixes[selectedTo] ?? '+XXX',
+          controller: receiveController,
+          errorText: receiveNumberError,
+          // le résultat du lookup (nom du bénéficiaire) prime sur le message générique
+          helperText: recipientLookupMessage ??
+              receiveNumberWarning ??
+              receiveNumberSuccess ??
+              numberHintForProvider(selectedTo),
+          helperIsSuccess: recipientNameResolved ||
+              (recipientLookupMessage == null && receiveNumberSuccess != null),
+          helperIsWarning:
+              recipientLookupMessage == null && receiveNumberWarning != null,
+          isLoading: recipientLookupInFlight,
+          maxLength: 10,
+          onChanged: (_) {
+            setState(() {});
+            _scheduleRecipientLookup();
+          },
+        ),
+      ],
+    ),
+  );
+}
+
+// ---- Étape 2 : montant ---------------------------------------------------
+
+Widget _buildAmountStep() {
+  final c = context.colors;
+  final currency = transferCurrency;
+  final hasAmount = amountController.text.trim().isNotEmpty && enteredAmount > 0;
+
+  return SingleChildScrollView(
+    key: const ValueKey('amount'),
+    padding: const EdgeInsets.fromLTRB(
+      AppSpacing.lg,
+      AppSpacing.lg,
+      AppSpacing.lg,
+      AppSpacing.lg,
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Combien envoyer ?', style: context.text.headlineSmall),
+        const SizedBox(height: AppSpacing.lg),
+
+        // Saisie du montant, traitée comme l'élément principal de l'écran.
+        AppCard(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg,
+            AppSpacing.xl,
+            AppSpacing.lg,
+            AppSpacing.xl,
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: amountController,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  textAlign: TextAlign.center,
+                  autofocus: true,
+                  cursorColor: c.brand,
+                  style: context.text.displaySmall?.copyWith(
+                    fontSize: 40,
+                    fontFeatures: kTabularFigures,
+                  ),
+                  decoration: InputDecoration(
+                    filled: false,
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    contentPadding: EdgeInsets.zero,
+                    hintText: '0',
+                    hintStyle: context.text.displaySmall?.copyWith(
+                      fontSize: 40,
+                      color: c.textMuted,
+                    ),
+                  ),
+                  onChanged: (_) => setState(() {}),
+                ),
+              ),
+              const SizedBox(width: AppSpacing.sm),
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  currency,
+                  style: context.text.titleMedium?.copyWith(color: c.brandText),
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: AppSpacing.md),
+
+        // Décomposition des frais : visible avant la confirmation, pas après.
+        AnimatedOpacity(
+          duration: const Duration(milliseconds: 200),
+          opacity: hasAmount ? 1 : 0.35,
+          child: AppCard(
+            child: Column(
+              children: [
+                DetailRow(
+                  label: 'Montant envoyé',
+                  value: '${formatThousands(enteredAmount.toStringAsFixed(0))} $currency',
+                ),
+                DetailRow(
+                  label: 'Frais de service',
+                  value: '${formatThousands(transferFee.toStringAsFixed(0))} $currency',
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+                  child: Divider(height: 1, color: c.border),
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text('Le bénéficiaire reçoit',
+                          style: context.text.titleSmall),
+                    ),
+                    Text(
+                      '${formatThousands(payoutAmount.toStringAsFixed(0))} $currency',
+                      style: context.text.titleLarge?.copyWith(
+                        color: c.brandText,
+                        fontFeatures: kTabularFigures,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+// ---- Étape 3 : confirmation ---------------------------------------------
+
+Widget _buildConfirmationStep() {
+  final c = context.colors;
+  final currency = transferCurrency;
+  final receiverPhone = _formatPhonePreview(selectedTo, receiveController.text);
+  final senderPhone = _formatPhonePreview(selectedFrom, sendController.text);
+
+  return SingleChildScrollView(
+    key: const ValueKey('confirmation'),
+    padding: const EdgeInsets.fromLTRB(
+      AppSpacing.lg,
+      AppSpacing.lg,
+      AppSpacing.lg,
+      AppSpacing.lg,
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Le bénéficiaire d'abord : c'est l'information qu'on vérifie avant
+        // de valider un envoi d'argent.
+        AppCard(
+          highlighted: true,
+          padding: const EdgeInsets.all(AppSpacing.xl),
+          child: Column(
+            children: [
+              // Les deux opérateurs concernés, pour que le trajet soit
+              // reconnaissable d'un coup d'œil au moment de valider.
+              OperatorPair(from: selectedFrom, to: selectedTo, size: 52),
+              const SizedBox(height: AppSpacing.lg),
+              Text(
+                resolvedRecipientDisplayName,
+                textAlign: TextAlign.center,
+                style: context.text.titleLarge,
+              ),
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                receiverPhone,
+                textAlign: TextAlign.center,
+                style: context.text.bodyMedium?.copyWith(
+                  fontFeatures: kTabularFigures,
+                ),
+              ),
+              const SizedBox(height: AppSpacing.md),
+              StatusPill(
+                label: recipientNameResolved
+                    ? 'Identité vérifiée'
+                    : 'Identité non confirmée',
+                tone: recipientNameResolved ? Tone.success : Tone.warning,
+                icon: recipientNameResolved
+                    ? Icons.verified_rounded
+                    : Icons.help_outline_rounded,
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: AppSpacing.lg),
+                child: Divider(height: 1, color: c.border),
+              ),
+              DetailRow(label: 'Réseau', value: selectedTo),
+              DetailRow(
+                label: 'Expéditeur',
+                value: senderPhone,
+                allowWrap: true,
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: AppSpacing.md),
+
+        // Le détail financier ensuite.
+        AppCard(
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text('Total débité', style: context.text.titleSmall),
+                  ),
+                  Text(
+                    '${formatThousands(enteredAmount.toStringAsFixed(0))} $currency',
+                    style: context.text.headlineSmall?.copyWith(
+                      fontFeatures: kTabularFigures,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.md),
+              DetailRow(
+                label: 'Dont frais',
+                value: '${formatThousands(transferFee.toStringAsFixed(0))} $currency',
+              ),
+              DetailRow(
+                label: 'Montant reçu',
+                value: '${formatThousands(payoutAmount.toStringAsFixed(0))} $currency',
+                emphasize: true,
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: AppSpacing.md),
+        const InfoBanner(
+          message: 'Vérifiez le nom et le numéro du bénéficiaire : un '
+              'transfert validé ne peut pas être annulé.',
+          icon: Icons.shield_outlined,
+        ),
+      ],
+    ),
+  );
+}
+
+// ---- Étape 4 : résultat --------------------------------------------------
+
+Widget _buildResultStep() {
+  final c = context.colors;
+  final status = lastOperationStatus ?? 'en_cours';
+  final isSuccess = status == 'valide';
+  final isFailure = status == 'echec';
+
+  final tone = isSuccess
+      ? Tone.success
+      : isFailure
+          ? Tone.danger
+          : Tone.warning;
+  final statusLabel = isSuccess
+      ? 'Transfert validé'
+      : isFailure
+          ? 'Transfert échoué'
+          : 'Transfert en cours';
+  final icon = isSuccess
+      ? Icons.check_rounded
+      : isFailure
+          ? Icons.close_rounded
+          : Icons.schedule_rounded;
+
+  return SingleChildScrollView(
+    key: const ValueKey('result'),
+    padding: const EdgeInsets.fromLTRB(
+      AppSpacing.lg,
+      AppSpacing.xl,
+      AppSpacing.lg,
+      AppSpacing.lg,
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Center(
+          child: TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0, end: 1),
+            duration: const Duration(milliseconds: 520),
+            curve: Curves.easeOutBack,
+            builder: (context, value, child) =>
+                Transform.scale(scale: 0.7 + (value * 0.3), child: child),
+            child: Container(
+              width: 76,
+              height: 76,
+              decoration: BoxDecoration(
+                color: tone.background(context),
+                shape: BoxShape.circle,
+              ),
+              child: isSuccess || isFailure
+                  ? Icon(icon, size: 38, color: tone.foreground(context))
+                  : SizedBox(
+                      width: 30,
+                      height: 30,
+                      child: Center(
+                        child: SizedBox(
+                          width: 26,
+                          height: 26,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.6,
+                            color: tone.foreground(context),
+                          ),
+                        ),
+                      ),
+                    ),
+            ),
+          ),
+        ),
+        const SizedBox(height: AppSpacing.lg),
+        Text(statusLabel, textAlign: TextAlign.center, style: context.text.headlineSmall),
+        const SizedBox(height: AppSpacing.xs),
+        Text(
+          lastOperationMessage ?? 'Votre opération a été enregistrée.',
+          textAlign: TextAlign.center,
+          style: context.text.bodyMedium,
+        ),
+        const SizedBox(height: AppSpacing.xl),
+        AppCard(
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text('Montant', style: context.text.titleSmall),
+                  ),
+                  Text(
+                    formatAmountLabel('${lastOperationAmount ?? '-'} ${lastOperationCurrency ?? ''}'.trim()),
+                    style: context.text.titleLarge?.copyWith(
+                      fontFeatures: kTabularFigures,
+                    ),
+                  ),
+                ],
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
+                child: Divider(height: 1, color: c.border),
+              ),
+              DetailRow(
+                label: 'Bénéficiaire',
+                value: lastOperationReceiver ?? '-',
+                allowWrap: true,
+              ),
+              DetailRow(
+                label: 'Trajet',
+                value: '${lastOperationFrom ?? '-'} → ${lastOperationTo ?? '-'}',
+                allowWrap: true,
+              ),
+              DetailRow(label: 'Date', value: lastOperationDate ?? '-'),
+              DetailRow(
+                label: 'Référence',
+                value: lastOperationTxId ?? '-',
+                allowWrap: true,
+              ),
+            ],
+          ),
+        ),
+        // Certains opérateurs (hors réseau PawaPay) exigent que le client
+        // valide son paiement sur une page dédiée : on lui donne le lien.
+        if (lastOperationCheckoutUrl != null) ...[
+          const SizedBox(height: AppSpacing.md),
+          AppCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.open_in_new_rounded, size: 18, color: c.brandText),
+                    const SizedBox(width: AppSpacing.sm),
+                    Expanded(
+                      child: Text('Validation à finaliser',
+                          style: context.text.titleSmall),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: AppSpacing.xs),
+                Text(
+                  'Ouvrez ce lien pour confirmer le paiement auprès de votre '
+                  'opérateur, puis revenez dans l\'application.',
+                  style: context.text.bodySmall,
+                ),
+                const SizedBox(height: AppSpacing.md),
+                SelectableText(
+                  lastOperationCheckoutUrl!,
+                  style: context.text.bodySmall?.copyWith(color: c.brandText),
+                ),
+                const SizedBox(height: AppSpacing.md),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    Clipboard.setData(
+                        ClipboardData(text: lastOperationCheckoutUrl!));
+                    showAppSnack(context, 'Lien copié', tone: Tone.success);
+                  },
+                  icon: const Icon(Icons.copy_rounded, size: 17),
+                  label: const Text('Copier le lien'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ],
+    ),
+  );
+}
+
+// ---- Barre d'action -----------------------------------------------------
+
+Widget _buildBottomBar() {
+  final c = context.colors;
+  final blockedDestination = stepIndex < 4 && !destinationCanReceive;
+
+  return Container(
+    padding: const EdgeInsets.fromLTRB(
+      AppSpacing.lg,
+      AppSpacing.md,
+      AppSpacing.lg,
+      AppSpacing.md,
+    ),
+    decoration: BoxDecoration(
+      color: c.canvas,
+      border: Border(top: BorderSide(color: c.border)),
+    ),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        PrimaryButton(
+          label: continueLabel,
+          onPressed: (isContinueActive && !blockedDestination)
+              ? () {
+                  if (stepIndex == 4) {
+                    _resetTransferFlow();
+                    return;
+                  }
+                  _onContinuePressed(
+                    context: context,
+                    stepIndex: stepIndex,
+                    setStepIndex: (i) => setState(() => stepIndex = i),
+                    amountController: amountController,
+                    sendController: sendController,
+                    receiveController: receiveController,
+                    selectedFrom: selectedFrom,
+                    selectedTo: selectedTo,
+                  );
+                }
+              : null,
+        ),
+        if (stepIndex < 3) ...[
+          const SizedBox(height: AppSpacing.sm),
+          Text(
+            'En continuant, vous acceptez nos conditions d\'utilisation '
+            'et notre politique de confidentialité.',
+            textAlign: TextAlign.center,
+            style: context.text.bodySmall?.copyWith(fontSize: 11.5),
+          ),
+        ],
+      ],
+    ),
+  );
 }
 
 void _onContinuePressed({
@@ -1720,13 +1853,13 @@ if (stepIndex < 3) {
 if (stepIndex == 1) {
   final sendErr = validateLocalNumberForProvider(selectedFrom, sendController.text);
   if (sendErr != null) {
-    scaffold.showSnackBar(SnackBar(content: Text('Numéro d\'envoi invalide : $sendErr'), backgroundColor: Colors.red));
+    showSnackOn(scaffold, 'Numéro d\'envoi invalide : $sendErr', tone: Tone.danger);
     return;
   }
 
   final receiveErr = validateLocalNumberForProvider(selectedTo, receiveController.text);
   if (receiveErr != null) {
-    scaffold.showSnackBar(SnackBar(content: Text('Numéro de réception invalide : $receiveErr'), backgroundColor: Colors.red));
+    showSnackOn(scaffold, 'Numéro de réception invalide : $receiveErr', tone: Tone.danger);
     return;
   }
 
@@ -1735,11 +1868,11 @@ if (stepIndex == 1) {
 if (stepIndex == 2) {
   final amount = enteredAmount;
   if (amount <= 0) {
-    scaffold.showSnackBar(const SnackBar(content: Text('Montant invalide'), backgroundColor: Colors.red));
+    showSnackOn(scaffold, 'Montant invalide', tone: Tone.danger);
     return;
   }
   if (payoutAmount <= 0) {
-    scaffold.showSnackBar(const SnackBar(content: Text('Montant insuffisant après frais'), backgroundColor: Colors.red));
+    showSnackOn(scaffold, 'Montant insuffisant après frais', tone: Tone.danger);
     return;
   }
   // Résoudre le nom du bénéficiaire avant d'afficher le récapitulatif
@@ -1751,25 +1884,8 @@ if (stepIndex == 2) {
   }
 }
 
-final snack = SnackBar(
-duration: const Duration(milliseconds: 900),
-backgroundColor: Colors.white,
-content: Row(
-mainAxisAlignment: MainAxisAlignment.center,
-children: [
-  Text(
-    stepIndex == 2
-        ? 'Preparation du recapitulatif final'
-        : 'Transfert de $selectedFrom vers $selectedTo',
-    style: const TextStyle(color: Colors.black),
-  ),
-  const SizedBox(width: 8),
-  const AnimatedDots(),
-],
-),
-);
-scaffold.showSnackBar(snack);
-await Future.delayed(const Duration(milliseconds: 900));
+// Passage à l'étape suivante : l'indicateur de progression rend compte
+// du changement, une notification en bas d'écran ferait doublon.
 if (stepIndex == 0) _rememberOperatorSelection();
 setStepIndex(stepIndex + 1);
 return;
@@ -1785,7 +1901,7 @@ if (amountText.isEmpty) {
 
 final amount = double.tryParse(amountText);
 if (amount == null || amount <= 0) {
-scaffold.showSnackBar(const SnackBar(content: Text("Montant invalide")));
+showSnackOn(scaffold, 'Montant invalide', tone: Tone.danger);
 _setProgress('');
 return;
 }
@@ -1803,14 +1919,14 @@ final sanitizedReceiver = receiverMsisdn.replaceFirst('+', '');
 final senderValidation = validateLocalNumberForProvider(selectedFrom, senderDigits);
 if (senderValidation != null) {
   _setProgress('');
-  scaffold.showSnackBar(SnackBar(content: Text('Numéro d\'envoi invalide : $senderValidation'), backgroundColor: Colors.red));
+  showSnackOn(scaffold, 'Numéro d\'envoi invalide : $senderValidation', tone: Tone.danger);
   return;
 }
 
 final receiverValidation = validateLocalNumberForProvider(selectedTo, receiverDigits);
 if (receiverValidation != null) {
   _setProgress('');
-  scaffold.showSnackBar(SnackBar(content: Text('Numéro de réception invalide : $receiverValidation'), backgroundColor: Colors.red));
+  showSnackOn(scaffold, 'Numéro de réception invalide : $receiverValidation', tone: Tone.danger);
   return;
 }
 
@@ -1842,7 +1958,7 @@ if (predicted != null) {
 if (predicted['failureReason'] != null) {
   final fr = predicted['failureReason'];
   final msg = fr['failureMessage'] ?? 'Erreur inconnue';
-  scaffold.showSnackBar(SnackBar(content: Text('Prediction error: $msg'), backgroundColor: Colors.red));
+  showSnackOn(scaffold, 'Vérification du numéro impossible : $msg', tone: Tone.danger);
   return;
 }
 
@@ -1852,39 +1968,38 @@ final predictedProvider = predicted['provider'];
 if (predictedNumber != null) {
   final correction = tryNormalizeCorrection(sanitizedSender, predictedNumber as String);
   if (correction == null) {
-    scaffold.showSnackBar(SnackBar(
-        content: Text('Numéro invalide après nettoyage : $predictedNumber'),
-        backgroundColor: Colors.red));
+    showSnackOn(scaffold, 'Numéro invalide après nettoyage : $predictedNumber',
+        tone: Tone.danger);
     return;
   }
   if (correction != normalize(sanitizedSender)) {
     final missing = correction.length - normalize(sanitizedSender).length;
     final extraInfo = missing > 0 ? " (il manque $missing chiffre${missing>1? 's':''})" : '';
-    scaffold.showSnackBar(SnackBar(
-      content: Text('Correction appliquée : $correction$extraInfo'),
-      backgroundColor: Colors.orange),
-    );
+    showSnackOn(scaffold, 'Correction appliquée : $correction$extraInfo',
+        tone: Tone.warning);
     sanitizedSender = correction; // corrigé pour l'appel suivant
   }
 }
 
 if (matches == false) {
-  scaffold.showSnackBar(SnackBar(content: Text('Le numéro semble appartenir à $predictedProvider — vérifiez le fournisseur sélectionné.'), backgroundColor: Colors.red));
+  showSnackOn(scaffold,
+      'Ce numéro semble appartenir à $predictedProvider — vérifiez l\'opérateur sélectionné.',
+      tone: Tone.danger);
   return;
 }
 
 }
 } else {
 final err = predictResp.body.isNotEmpty ? jsonDecode(predictResp.body)['error'] ?? predictResp.body : 'Erreur prédiction';
-scaffold.showSnackBar(SnackBar(content: Text('Impossible de valider le numéro : $err'), backgroundColor: Colors.red));
+showSnackOn(scaffold, 'Impossible de valider le numéro : $err', tone: Tone.danger);
 return;
 }
 } on TimeoutException {
-scaffold.showSnackBar(const SnackBar(content: Text('Validation numéro : timeout'), backgroundColor: Colors.red));
+showSnackOn(scaffold, 'Vérification du numéro : délai dépassé', tone: Tone.danger);
 return;
 } catch (e) {
 debugPrint('Erreur predict-provider: $e');
-scaffold.showSnackBar(SnackBar(content: Text('Validation numéro échouée : $e'), backgroundColor: Colors.red));
+showSnackOn(scaffold, 'Vérification du numéro échouée : $e', tone: Tone.danger);
 return;
 }
 
@@ -1946,7 +2061,7 @@ if (response.statusCode == 200) {
     if (errorMessage != null || (errorCode != null && errorCode != 0)) {
       final errMsg = errorMessage ?? 'Erreur (code $errorCode)';
       debugPrint('⚠️ Erreur dépôt: $errMsg');
-      scaffold.showSnackBar(SnackBar(content: Text('Erreur dépôt : $errMsg'), backgroundColor: Colors.red));
+      showSnackOn(scaffold, 'Erreur lors du dépôt : $errMsg', tone: Tone.danger);
       break;
     }
   }
@@ -1970,14 +2085,19 @@ if (response.statusCode == 200) {
       date: HistoryStorage.formatDisplayDate(DateTime.now()),
     ),
   );
+  final checkoutUrl = data['checkoutUrl']?.toString();
   _captureOperationResult(
     status: uiStatus,
     txId: depositId,
     amount: amountStr,
     currency: currency,
-    message: isCompleted
-        ? 'Le transfert a été validé avec succès.'
-        : 'Dépôt initié — confirmation de l\'opérateur en cours…',
+    checkoutUrl: checkoutUrl,
+    message: checkoutUrl != null
+        ? 'Finalisez le paiement sur la page de votre opérateur pour que '
+            'le transfert soit exécuté.'
+        : isCompleted
+            ? 'Le transfert a été validé avec succès.'
+            : 'Dépôt initié — confirmation de l\'opérateur en cours…',
   );
   setStepIndex(4);
   success = true;
@@ -1990,341 +2110,256 @@ if (response.statusCode == 200) {
 } else if (response.statusCode == 401) {
   // jeton expiré ou invalide : retour à l'écran de connexion
   await ApiClient.instance.logout();
-  scaffold.showSnackBar(const SnackBar(
-      content: Text('Session expirée — reconnectez-vous.'),
-      backgroundColor: Colors.red));
+  showSnackOn(scaffold, 'Session expirée — reconnectez-vous.', tone: Tone.danger);
   widget.onLoggedOut?.call();
+  break;
+} else if (response.statusCode == 503 &&
+    data['error'] == 'payout_rail_unavailable') {
+  // Le serveur a refusé *avant* tout prélèvement : on relaie son message
+  // tel quel, il explique précisément quel opérateur est indisponible.
+  showSnackOn(
+    scaffold,
+    data['message']?.toString() ??
+        'Cet opérateur ne peut pas encore recevoir de transfert.',
+    tone: Tone.warning,
+    duration: const Duration(seconds: 6),
+  );
   break;
 } else {
   final err = data['message'] ?? data['error'] ?? "Erreur ${response.statusCode}";
-  scaffold.showSnackBar(SnackBar(content: Text("Erreur serveur : $err"), backgroundColor: Colors.red));
+  showSnackOn(scaffold, 'Erreur serveur : $err', tone: Tone.danger);
   break;
 }
 } else {
 debugPrint("⚠️ Réponse inattendue: ${response.body}");
-scaffold.showSnackBar(SnackBar(content: Text("Erreur serveur : réponse inattendue (${response.statusCode})"), backgroundColor: Colors.red));
+showSnackOn(scaffold, 'Réponse inattendue du serveur (${response.statusCode})', tone: Tone.danger);
 break;
 }
 } on TimeoutException {
   if (attempt >= maxRetries) {
-    scaffold.showSnackBar(const SnackBar(content: Text("Erreur réseau : Timeout"), backgroundColor: Colors.red));
+    showSnackOn(scaffold, 'Erreur réseau : délai dépassé', tone: Tone.danger);
   } else {
     await Future.delayed(const Duration(seconds: 1));
     continue;
   }
 } catch (e) {
   debugPrint("Erreur envoi: $e");
-  scaffold.showSnackBar(SnackBar(content: Text("Erreur réseau : $e"), backgroundColor: Colors.red));
+  showSnackOn(scaffold, 'Erreur réseau : $e', tone: Tone.danger);
   break;
 } finally {
   if (success) _setProgress('');
 }
 }
 }
+}
 
+/// Bouton de retour à l'étape précédente.
+class _BackChip extends StatelessWidget {
+  final VoidCallback onTap;
 
+  const _BackChip({required this.onTap});
 
-
-Widget buildWheels(
-FixedExtentScrollController fromController,
-FixedExtentScrollController toController,
-String selectedFrom,
-String selectedTo,
-Function(String) onFromChanged,
-Function(String) onToChanged,
-) {
-return SizedBox(
-height: 200,
-child: Stack(
-alignment: Alignment.center,
-children: [
-  Container(
-    width: MediaQuery.of(context).size.width * 0.84,
-    height: 50,
-    decoration: BoxDecoration(
-      color: Colors.black,
-      border: Border.all(color: Colors.orange, width: 0.2),
-      borderRadius: BorderRadius.circular(56),
-    ),
-    child: Center(
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
       child: Container(
-        width: MediaQuery.of(context).size.width * 0.82,
-        height: 43,
+        width: 30,
+        height: 30,
         decoration: BoxDecoration(
-          color: const Color(0x1AFFFFFF),
-          borderRadius: BorderRadius.circular(44),
+          color: c.surface,
+          shape: BoxShape.circle,
+          border: Border.all(color: c.border),
         ),
+        child: Icon(Icons.chevron_left_rounded, size: 19, color: c.textSecondary),
       ),
-    ),
-  ),
-  Row(
-    mainAxisAlignment: MainAxisAlignment.center,
-    children: [
-      SizedBox(
-        width: 150,
-        height: 200,
-        child: ListWheelScrollView.useDelegate(
-          controller: fromController,
-          itemExtent: 50,
-          physics: const FixedExtentScrollPhysics(),
-          overAndUnderCenterOpacity: 1.0,
-          perspective: 0.003,
-          onSelectedItemChanged: (index) {
-            onFromChanged(providers[index]);
-          },
-          childDelegate: ListWheelChildBuilderDelegate(
-            builder: (context, index) {
-              if (index < 0 || index >= providers.length) return null;
-              bool isSelected = providers[index] == selectedFrom;
-              return Center(
-                child: Text(
-                  providers[index],
-                  style: TextStyle(
-                    fontSize: isSelected ? 20 : 16,
-                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                    color: isSelected ? Colors.white : Colors.grey,
-                  ),
-                ),
-              );
-            },
-            childCount: providers.length,
-          ),
-        ),
-      ),
-      SizedBox(
-        width: 150,
-        height: 200,
-        child: ListWheelScrollView.useDelegate(
-          controller: toController,
-          itemExtent: 50,
-          physics: const FixedExtentScrollPhysics(),
-          overAndUnderCenterOpacity: 1.0,
-          perspective: 0.003,
-          onSelectedItemChanged: (index) {
-            onToChanged(providers[index]);
-          },
-          childDelegate: ListWheelChildBuilderDelegate(
-            builder: (context, index) {
-              if (index < 0 || index >= providers.length) return null;
-              bool isSelected = providers[index] == selectedTo;
-              return Center(
-                child: Text(
-                  providers[index],
-                  style: TextStyle(
-                    fontSize: isSelected ? 20 : 16,
-                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                    color: isSelected ? Colors.white : Colors.grey,
-                  ),
-                ),
-              );
-            },
-            childCount: providers.length,
-          ),
-        ),
-      ),
-    ],
-  ),
-],
-),
-);
+    );
+  }
 }
 
-Widget buildCustomTabBar() {
-return Padding(
-padding: const EdgeInsets.symmetric(horizontal: 20),
-child: Row(
-mainAxisAlignment: MainAxisAlignment.center,
-children: [
-  buildTabItem("Transfert", 0),
-  const SizedBox(width: 30),
-  buildTabItem("Historique", 1),
-],
-),
-);
+/// Une extrémité du trajet (« Depuis MTN BJ »).
+class _RouteEnd extends StatelessWidget {
+  final String label;
+  final String value;
+  final bool alignEnd;
+
+  const _RouteEnd({
+    required this.label,
+    required this.value,
+    this.alignEnd = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment:
+          alignEnd ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      children: [
+        Text(label.toUpperCase(), style: context.text.labelSmall),
+        const SizedBox(height: 2),
+        Text(
+          value,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: context.text.titleSmall,
+        ),
+      ],
+    );
+  }
 }
 
-Widget buildTabItem(String title, int index) {
-bool isActive = selectedTab == index;
-return GestureDetector(
-onTap: () {
-setState(() {
-  selectedTab = index;
-  tabController.animateTo(index);
-});
-},
-child: SizedBox(
-width: 100,
-height: 76,
-child: Stack(
-  alignment: Alignment.center,
-  children: [
-    Positioned(
-      top: 10,
-      child: Text(
-        title,
-        style: TextStyle(
-          fontSize: 18,
-          fontWeight: FontWeight.bold,
-          color: isActive ? Colors.white : Colors.grey,
-        ),
-      ),
-    ),
-    if (isActive)
-      Positioned(
-        bottom: 8,
-        child: SizedBox(
-          height: 55,
-          width: 300,
-          child: Image.asset('assets/underline.png', fit: BoxFit.contain),
-        ),
-      ),
-  ],
-),
-),
-);
-}
-}
-
+/// Trois points animés, utilisés pendant les temps d'attente.
 class AnimatedDots extends StatefulWidget {
-const AnimatedDots({super.key});
+  final Color? color;
 
-@override
-State<AnimatedDots> createState() => _AnimatedDotsState();
+  const AnimatedDots({super.key, this.color});
+
+  @override
+  State<AnimatedDots> createState() => _AnimatedDotsState();
 }
 
-class _AnimatedDotsState extends State<AnimatedDots> with SingleTickerProviderStateMixin {
-late AnimationController _controller;
+class _AnimatedDotsState extends State<AnimatedDots>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
 
-@override
-void initState() {
-super.initState();
-_controller = AnimationController(
-duration: const Duration(milliseconds: 900),
-vsync: this,
-)..repeat();
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 900),
+      vsync: this,
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Widget _buildDot(int index) {
+    final color = widget.color ?? context.colors.textMuted;
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        final offset =
+            sin((_controller.value * 2 * pi) + (index * pi / 3)) * 2.5;
+        return Transform.translate(offset: Offset(0, -offset), child: child);
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 3),
+        child: CircleAvatar(radius: 3, backgroundColor: color),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 18,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: List.generate(3, _buildDot),
+      ),
+    );
+  }
 }
 
-@override
-void dispose() {
-_controller.dispose();
-super.dispose();
-}
-
-Widget buildDot(int index) {
-return AnimatedBuilder(
-animation: _controller,
-builder: (context, child) {
-final double offset = sin((_controller.value * 2 * pi) + (index * pi / 3)) * 2.5;
-return Transform.translate(
-  offset: Offset(0, -offset),
-  child: child,
-);
-},
-child: const Padding(
-padding: EdgeInsets.symmetric(horizontal: 4),
-child: CircleAvatar(radius: 4, backgroundColor: Colors.black),
-),
-);
-}
-
-@override
-Widget build(BuildContext context) {
-return SizedBox(
-height: 20,
-child: Row(
-mainAxisSize: MainAxisSize.min,
-children: List.generate(3, buildDot),
-),
-);
-}
-}
-
+/// Champ de numéro avec indicatif figé.
+///
+/// Le message d'aide change de couleur selon qu'il informe, avertit ou
+/// confirme — l'utilisateur sait sans lire si son numéro passe ou non.
 class CustomInputFieldWithFixedPrefix extends StatelessWidget {
-final String label;
-final String prefix;
-final TextEditingController controller;
-final Function(String)? onChanged;
-final String? errorText;
-final String? helperText;
-final bool helperIsSuccess;
-final bool helperIsWarning;
-final int? maxLength;
+  final String label;
+  final String prefix;
+  final TextEditingController controller;
+  final Function(String)? onChanged;
+  final String? errorText;
+  final String? helperText;
+  final bool helperIsSuccess;
+  final bool helperIsWarning;
+  final bool isLoading;
+  final int? maxLength;
 
-const CustomInputFieldWithFixedPrefix({
-required this.label,
-required this.prefix,
-required this.controller,
-this.onChanged,
-this.errorText,
-this.helperText,
-this.helperIsSuccess = false,
-this.helperIsWarning = false,
-this.maxLength,
-super.key,
-});
+  const CustomInputFieldWithFixedPrefix({
+    required this.label,
+    required this.prefix,
+    required this.controller,
+    this.onChanged,
+    this.errorText,
+    this.helperText,
+    this.helperIsSuccess = false,
+    this.helperIsWarning = false,
+    this.isLoading = false,
+    this.maxLength,
+    super.key,
+  });
 
-@override
-Widget build(BuildContext context) {
-return TextField(
+  @override
+  Widget build(BuildContext context) {
+    final c = context.colors;
+    final helperColor = helperIsSuccess
+        ? c.success
+        : helperIsWarning
+            ? c.warning
+            : c.textMuted;
+
+    return TextField(
       controller: controller,
       onChanged: onChanged,
-  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-  maxLength: maxLength,
-  buildCounter: (
-    BuildContext context, {
-    required int currentLength,
-    required bool isFocused,
-    required int? maxLength,
-  }) => null,
-      style: const TextStyle(
-          color: Colors.white,
-          fontSize: 16,
-          fontWeight: FontWeight.bold
+      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+      maxLength: maxLength,
+      buildCounter: (
+        BuildContext context, {
+        required int currentLength,
+        required bool isFocused,
+        required int? maxLength,
+      }) =>
+          null,
+      style: context.text.bodyLarge?.copyWith(
+        fontSize: 16,
+        fontWeight: FontWeight.w600,
+        fontFeatures: kTabularFigures,
       ),
-      cursorColor: const Color(0xFFFE6F0B),
+      cursorColor: c.brand,
       keyboardType: TextInputType.phone,
       decoration: InputDecoration(
-        filled: true,
-        fillColor: const Color(0xFF1C1C1C),
         labelText: label,
-        labelStyle: const TextStyle(
-            color: Colors.white,
-            fontSize: 14,
-            fontWeight: FontWeight.w500
-        ),
         helperText: helperText,
-        helperMaxLines: 2,
-        helperStyle: TextStyle(
-          color: helperIsSuccess
-              ? Colors.greenAccent
-              : helperIsWarning
-                  ? const Color(0xFFFFB74D)
-                  : Colors.white54,
-          fontSize: 12,
+        helperStyle: context.text.bodySmall?.copyWith(
+          color: helperColor,
           fontWeight: helperIsSuccess || helperIsWarning
               ? FontWeight.w600
-              : FontWeight.normal,
+              : FontWeight.w400,
         ),
         errorText: errorText,
-        prefixText: '$prefix ',
-        prefixStyle: const TextStyle(
-            color: Color(0xFFFE6F0B),
-            fontSize: 16,
-            fontWeight: FontWeight.bold
+        prefixIcon: Padding(
+          padding: const EdgeInsets.only(left: AppSpacing.lg, right: AppSpacing.sm),
+          child: Text(
+            prefix,
+            style: context.text.bodyLarge?.copyWith(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: c.textSecondary,
+              fontFeatures: kTabularFigures,
+            ),
+          ),
         ),
-        border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFFFE6F0B))
-        ),
-        enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFFFE6F0B))
-        ),
-        focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: Color(0xFFFE6F0B), width: 2)
-        ),
-        contentPadding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
+        prefixIconConstraints: const BoxConstraints(minWidth: 0, minHeight: 0),
+        suffixIcon: isLoading
+            ? Padding(
+                padding: const EdgeInsets.all(14),
+                child: SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: c.brand),
+                ),
+              )
+            : helperIsSuccess
+                ? Icon(Icons.check_circle_rounded, size: 19, color: c.success)
+                : null,
       ),
     );
   }

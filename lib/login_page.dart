@@ -4,8 +4,8 @@ import 'package:flutter/services.dart';
 import 'api_client.dart';
 import 'register_page.dart';
 import 'server_settings_sheet.dart';
-
-const Color _accent = Color(0xFFFE6F0B);
+import 'theme.dart';
+import 'ui_kit.dart';
 
 class LoginPage extends StatefulWidget {
   /// Appelé quand la connexion réussit (l'AuthGate rebascule sur l'app).
@@ -65,44 +65,42 @@ class _LoginPageState extends State<LoginPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+            padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.xl,
+              vertical: AppSpacing.xl,
+            ),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 420),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const SizedBox(height: 12),
-                  const Icon(Icons.swap_horiz_rounded, color: _accent, size: 64),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'SwitchMoney',
+                  const SizedBox(height: AppSpacing.md),
+                  const Center(child: BrandMark(size: 60, showWordmark: false)),
+                  const SizedBox(height: AppSpacing.xl),
+                  Text(
+                    'Bon retour',
                     textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 32,
-                      fontWeight: FontWeight.w800,
-                    ),
+                    style: context.text.displaySmall,
                   ),
-                  const SizedBox(height: 6),
-                  const Text(
-                    'Connectez-vous pour envoyer de l\'argent',
+                  const SizedBox(height: AppSpacing.sm),
+                  Text(
+                    'Connectez-vous pour envoyer de l\'argent\nentre opérateurs mobile money.',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.white60, fontSize: 14),
+                    style: context.text.bodyMedium,
                   ),
-                  const SizedBox(height: 36),
+                  const SizedBox(height: AppSpacing.xxl),
                   AuthTextField(
                     controller: phoneController,
-                    label: 'Numéro de téléphone (avec indicatif)',
-                    hint: 'ex: 22951469075',
+                    label: 'Numéro de téléphone',
+                    hint: '22951469075',
                     keyboardType: TextInputType.phone,
                     inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                    prefixIcon: Icons.phone_android,
+                    prefixIcon: Icons.phone_iphone_rounded,
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: AppSpacing.lg),
                   AuthTextField(
                     controller: pinController,
                     label: 'Code PIN',
@@ -112,12 +110,14 @@ class _LoginPageState extends State<LoginPage> {
                       FilteringTextInputFormatter.digitsOnly,
                       LengthLimitingTextInputFormatter(8),
                     ],
-                    prefixIcon: Icons.lock_outline,
+                    prefixIcon: Icons.lock_outline_rounded,
                     obscureText: obscurePin,
                     suffix: IconButton(
                       icon: Icon(
-                        obscurePin ? Icons.visibility_off : Icons.visibility,
-                        color: Colors.white38,
+                        obscurePin
+                            ? Icons.visibility_off_outlined
+                            : Icons.visibility_outlined,
+                        color: context.colors.textMuted,
                         size: 20,
                       ),
                       onPressed: () => setState(() => obscurePin = !obscurePin),
@@ -125,45 +125,20 @@ class _LoginPageState extends State<LoginPage> {
                     onSubmitted: (_) => _submit(),
                   ),
                   if (errorMessage != null) ...[
-                    const SizedBox(height: 14),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 10),
-                      decoration: BoxDecoration(
-                        color: const Color(0x22FF5252),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: const Color(0x66FF5252)),
-                      ),
-                      child: Text(
-                        errorMessage!,
-                        style: const TextStyle(
-                            color: Color(0xFFFF8A80), fontSize: 13),
-                      ),
+                    const SizedBox(height: AppSpacing.lg),
+                    InfoBanner(
+                      message: errorMessage!,
+                      tone: Tone.danger,
+                      icon: Icons.error_outline_rounded,
                     ),
                   ],
-                  const SizedBox(height: 24),
-                  ElevatedButton(
-                    onPressed: submitting ? null : _submit,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: _accent,
-                      foregroundColor: Colors.black,
-                      disabledBackgroundColor: Colors.grey,
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(30)),
-                      textStyle: const TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.bold),
-                    ),
-                    child: submitting
-                        ? const SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2, color: Colors.black),
-                          )
-                        : const Text('Se connecter'),
+                  const SizedBox(height: AppSpacing.xl),
+                  PrimaryButton(
+                    label: 'Se connecter',
+                    loading: submitting,
+                    onPressed: _submit,
                   ),
-                  const SizedBox(height: 18),
+                  const SizedBox(height: AppSpacing.lg),
                   TextButton(
                     onPressed: submitting
                         ? null
@@ -176,29 +151,29 @@ class _LoginPageState extends State<LoginPage> {
                               ),
                             );
                           },
-                    child: const Text.rich(
+                    child: Text.rich(
                       TextSpan(
                         text: 'Pas encore de compte ? ',
-                        style: TextStyle(color: Colors.white60),
+                        style: context.text.bodyMedium,
                         children: [
                           TextSpan(
                             text: 'Créer un compte',
-                            style: TextStyle(
-                                color: _accent, fontWeight: FontWeight.w700),
+                            style: context.text.bodyMedium?.copyWith(
+                              color: context.colors.brandText,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                         ],
                       ),
                     ),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: AppSpacing.xs),
                   TextButton.icon(
                     onPressed: () => showServerSettingsSheet(context),
-                    icon: const Icon(Icons.dns_outlined,
-                        color: Colors.white38, size: 18),
-                    label: const Text(
-                      'Serveur backend',
-                      style: TextStyle(color: Colors.white38, fontSize: 13),
-                    ),
+                    icon: Icon(Icons.dns_outlined,
+                        color: context.colors.textMuted, size: 17),
+                    label: Text('Serveur backend',
+                        style: context.text.bodySmall),
                   ),
                 ],
               ),
@@ -211,6 +186,9 @@ class _LoginPageState extends State<LoginPage> {
 }
 
 /// Champ de saisie partagé par les écrans de connexion/inscription.
+///
+/// L'habillage (fond, contour, focus) vient du thème : ce widget n'ajoute que
+/// le libellé, l'icône et les règles de saisie.
 class AuthTextField extends StatelessWidget {
   final TextEditingController controller;
   final String label;
@@ -243,34 +221,19 @@ class AuthTextField extends StatelessWidget {
       inputFormatters: inputFormatters,
       obscureText: obscureText,
       onSubmitted: onSubmitted,
-      style: const TextStyle(
-          color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-      cursorColor: _accent,
+      style: context.text.bodyLarge?.copyWith(
+        fontWeight: FontWeight.w600,
+        fontSize: 16,
+        fontFeatures: keyboardType == TextInputType.phone ? kTabularFigures : null,
+      ),
+      cursorColor: context.colors.brand,
       decoration: InputDecoration(
-        filled: true,
-        fillColor: const Color(0xFF1C1C1C),
         labelText: label,
         hintText: hint,
-        hintStyle: const TextStyle(color: Colors.white24),
-        labelStyle: const TextStyle(color: Colors.white70, fontSize: 14),
         prefixIcon: prefixIcon != null
-            ? Icon(prefixIcon, color: Colors.white38, size: 20)
+            ? Icon(prefixIcon, color: context.colors.textMuted, size: 20)
             : null,
         suffixIcon: suffix,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: const BorderSide(color: _accent),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: const BorderSide(color: Color(0x44FE6F0B)),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: const BorderSide(color: _accent, width: 2),
-        ),
-        contentPadding:
-            const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
       ),
     );
   }

@@ -1,9 +1,9 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Fond noir -->
-    <item android:drawable="@android:color/black" />
+    <!-- Fond accordé au thème (voir values/colors.xml et values-night/colors.xml) -->
+    <item android:drawable="@color/splash_background" />
 
-    <!-- Ton logo centré -->
+    <!-- Logo centré -->
     <item>
         <bitmap
             android:gravity="center"

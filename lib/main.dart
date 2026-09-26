@@ -3,41 +3,35 @@ import 'package:flutter/material.dart';
 import 'api_client.dart';
 import 'home_page.dart';
 import 'login_page.dart';
+import 'theme.dart';
+import 'theme_controller.dart';
+import 'ui_kit.dart';
 
 void main() {
   runApp(const MyApp());
 }
 
-class MyApp extends StatefulWidget {
+class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
   @override
-  State<MyApp> createState() => _MyAppState();
-}
-
-class _MyAppState extends State<MyApp> {
-  ThemeMode themeMode = ThemeMode.dark;
-
-  void setThemeMode(ThemeMode mode) {
-    setState(() {
-      themeMode = mode;
-    });
-  }
-
-  @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData.light().copyWith(
-        scaffoldBackgroundColor: Colors.white,
-        appBarTheme: const AppBarTheme(backgroundColor: Colors.black),
-      ),
-      darkTheme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: Colors.black,
-        appBarTheme: const AppBarTheme(backgroundColor: Colors.black),
-      ),
-      themeMode: themeMode,
-      home: AuthGate(themeMode: themeMode, onThemeChange: setThemeMode),
+    final themeController = ThemeController.instance;
+
+    // Le thème est reconstruit à chaque changement de préférence : la bascule
+    // clair/sombre est donc immédiate, sans redémarrage de l'application.
+    return AnimatedBuilder(
+      animation: themeController,
+      builder: (context, _) {
+        return MaterialApp(
+          title: 'SwitchMoney',
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.light(),
+          darkTheme: AppTheme.dark(),
+          themeMode: themeController.mode,
+          home: const AuthGate(),
+        );
+      },
     );
   }
 }
@@ -45,14 +39,7 @@ class _MyAppState extends State<MyApp> {
 /// Charge la session stockée puis affiche soit l'app, soit l'écran de
 /// connexion. `refresh()` est rappelé après connexion/déconnexion.
 class AuthGate extends StatefulWidget {
-  final ThemeMode themeMode;
-  final ValueChanged<ThemeMode> onThemeChange;
-
-  const AuthGate({
-    super.key,
-    required this.themeMode,
-    required this.onThemeChange,
-  });
+  const AuthGate({super.key});
 
   @override
   State<AuthGate> createState() => _AuthGateState();
@@ -68,6 +55,9 @@ class _AuthGateState extends State<AuthGate> {
   }
 
   Future<void> _bootstrap() async {
+    // Le thème enregistré est restitué avant le premier écran pour éviter
+    // un flash clair au lancement chez les utilisateurs en mode sombre.
+    await ThemeController.instance.load();
     await ApiClient.instance.init();
     if (!mounted) return;
     setState(() => ready = true);
@@ -85,23 +75,42 @@ class _AuthGateState extends State<AuthGate> {
 
   @override
   Widget build(BuildContext context) {
-    if (!ready) {
-      return const Scaffold(
-        backgroundColor: Colors.black,
-        body: Center(
-          child: CircularProgressIndicator(color: Color(0xFFFE6F0B)),
-        ),
-      );
-    }
+    if (!ready) return const _SplashScreen();
 
     if (!ApiClient.instance.isLoggedIn) {
       return LoginPage(onAuthenticated: refresh);
     }
 
-    return HomePage(
-      themeMode: widget.themeMode,
-      onThemeChange: widget.onThemeChange,
-      onLoggedOut: refresh,
+    return HomePage(onLoggedOut: refresh);
+  }
+}
+
+/// Écran d'attente affiché le temps de restaurer la session.
+class _SplashScreen extends StatelessWidget {
+  const _SplashScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const BrandMark(size: 56, showWordmark: false),
+            const SizedBox(height: AppSpacing.lg),
+            Text('SwitchMoney', style: context.text.headlineSmall),
+            const SizedBox(height: AppSpacing.xl),
+            SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(
+                strokeWidth: 2.4,
+                color: context.colors.brand,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

@@ -1,15 +1,14 @@
 import 'package:flutter/material.dart';
 
 import 'api_client.dart';
-
-const Color _accent = Color(0xFFFE6F0B);
+import 'theme.dart';
+import 'ui_kit.dart';
 
 /// Feuille de configuration de l'URL du backend.
 /// Nécessaire pour tester sur téléphone physique : on y saisit l'adresse
 /// IP Wi-Fi du PC qui héberge le serveur (ex: http://192.168.1.50:3002).
 Future<void> showServerSettingsSheet(BuildContext context) async {
-  final controller =
-      TextEditingController(text: ApiClient.instance.baseUrl);
+  final controller = TextEditingController(text: ApiClient.instance.baseUrl);
 
   try {
     await _showSheet(context, controller);
@@ -23,12 +22,9 @@ Future<void> _showSheet(
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
-    backgroundColor: const Color(0xFF141414),
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
-    ),
     builder: (sheetContext) {
       String? feedback;
+      Tone feedbackTone = Tone.neutral;
       bool testing = false;
 
       return StatefulBuilder(
@@ -36,103 +32,81 @@ Future<void> _showSheet(
           Future<void> saveAndTest() async {
             setSheetState(() {
               testing = true;
-              feedback =
-                  'Test en cours… si le serveur est en pause (plan gratuit), le réveil peut prendre jusqu\'à 50s.';
+              feedbackTone = Tone.neutral;
+              feedback = 'Test en cours… si le serveur est en pause '
+                  '(plan gratuit), le réveil peut prendre jusqu\'à 50 s.';
             });
             await ApiClient.instance.setBaseUrl(controller.text);
+
             String message;
+            Tone tone;
             try {
               final resp = await ApiClient.instance
                   .getJson('/healthz', timeout: kColdStartTimeout);
-              message = resp.statusCode == 200
-                  ? '✅ Serveur joignable (${ApiClient.instance.baseUrl})'
-                  : '⚠️ Serveur répond avec le code ${resp.statusCode}';
+              if (resp.statusCode == 200) {
+                message = 'Serveur joignable (${ApiClient.instance.baseUrl})';
+                tone = Tone.success;
+              } else {
+                message = 'Le serveur répond avec le code ${resp.statusCode}';
+                tone = Tone.warning;
+              }
             } catch (_) {
-              message =
-                  '❌ Serveur injoignable à ${ApiClient.instance.baseUrl}';
+              message = 'Serveur injoignable à ${ApiClient.instance.baseUrl}';
+              tone = Tone.danger;
             }
+
             setSheetState(() {
               testing = false;
               feedback = message;
+              feedbackTone = tone;
             });
           }
 
           return Padding(
             padding: EdgeInsets.only(
-              left: 24,
-              right: 24,
-              top: 24,
-              bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+              left: AppSpacing.xl,
+              right: AppSpacing.xl,
+              top: AppSpacing.sm,
+              bottom: MediaQuery.of(context).viewInsets.bottom + AppSpacing.xl,
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text(
-                  'Serveur backend',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                  ),
+                const PageHeading(
+                  title: 'Serveur backend',
+                  subtitle: 'Sur téléphone physique, indiquez l\'adresse IP '
+                      'Wi-Fi du PC qui héberge le backend (même réseau requis).',
                 ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Sur téléphone physique, indiquez l\'adresse IP Wi-Fi du PC '
-                  'qui héberge le backend (même réseau Wi-Fi requis).',
-                  style: TextStyle(color: Colors.white60, fontSize: 13),
-                ),
-                const SizedBox(height: 18),
+                const SizedBox(height: AppSpacing.xl),
                 TextField(
                   controller: controller,
                   keyboardType: TextInputType.url,
-                  style: const TextStyle(color: Colors.white, fontSize: 15),
-                  cursorColor: _accent,
-                  decoration: InputDecoration(
-                    filled: true,
-                    fillColor: const Color(0xFF1C1C1C),
+                  style: context.text.bodyLarge,
+                  cursorColor: context.colors.brand,
+                  decoration: const InputDecoration(
                     labelText: 'URL du backend',
                     hintText: 'http://192.168.1.50:3002',
-                    hintStyle: const TextStyle(color: Colors.white24),
-                    labelStyle:
-                        const TextStyle(color: Colors.white70, fontSize: 14),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: const BorderSide(color: Color(0x44FE6F0B)),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: const BorderSide(color: _accent, width: 2),
-                    ),
                   ),
                 ),
                 if (feedback != null) ...[
-                  const SizedBox(height: 12),
-                  Text(
-                    feedback!,
-                    style: const TextStyle(color: Colors.white70, fontSize: 13),
+                  const SizedBox(height: AppSpacing.lg),
+                  InfoBanner(
+                    message: feedback!,
+                    tone: feedbackTone,
+                    icon: switch (feedbackTone) {
+                      Tone.success => Icons.check_circle_outline_rounded,
+                      Tone.danger => Icons.error_outline_rounded,
+                      Tone.warning => Icons.warning_amber_rounded,
+                      _ => Icons.hourglass_empty_rounded,
+                    },
                   ),
                 ],
-                const SizedBox(height: 18),
-                ElevatedButton(
-                  onPressed: testing ? null : saveAndTest,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _accent,
-                    foregroundColor: Colors.black,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(26)),
-                    textStyle: const TextStyle(
-                        fontSize: 16, fontWeight: FontWeight.bold),
-                  ),
-                  child: testing
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2, color: Colors.black),
-                        )
-                      : const Text('Enregistrer et tester'),
+                const SizedBox(height: AppSpacing.xl),
+                PrimaryButton(
+                  label: 'Enregistrer et tester',
+                  loading: testing,
+                  onPressed: saveAndTest,
                 ),
               ],
             ),

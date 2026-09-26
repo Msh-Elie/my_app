@@ -3,8 +3,8 @@ import 'package:flutter/services.dart';
 
 import 'api_client.dart';
 import 'login_page.dart' show AuthTextField;
-
-const Color _accent = Color(0xFFFE6F0B);
+import 'theme.dart';
+import 'ui_kit.dart';
 
 class RegisterPage extends StatefulWidget {
   final VoidCallback? onAuthenticated;
@@ -88,72 +88,77 @@ class _RegisterPageState extends State<RegisterPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
-        title: const Text('Créer un compte',
-            style: TextStyle(color: Colors.white)),
-      ),
+      appBar: AppBar(title: const Text('Créer un compte')),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.xl,
+              AppSpacing.sm,
+              AppSpacing.xl,
+              AppSpacing.xxl,
+            ),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 420),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Text(
-                    'Vos informations restent sur votre serveur SwitchMoney.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.white60, fontSize: 13),
+                  Text(
+                    'Créez votre compte en une minute.',
+                    style: context.text.headlineSmall,
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: AppSpacing.sm),
+                  Text(
+                    'Vos informations restent sur votre serveur SwitchMoney.',
+                    style: context.text.bodyMedium,
+                  ),
+                  const SizedBox(height: AppSpacing.xl),
                   AuthTextField(
                     controller: nameController,
                     label: 'Nom complet',
                     hint: 'ex: MENSAH Elie',
-                    prefixIcon: Icons.person_outline,
+                    prefixIcon: Icons.person_outline_rounded,
                   ),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: AppSpacing.lg),
                   AuthTextField(
                     controller: phoneController,
-                    label: 'Numéro de téléphone (avec indicatif)',
-                    hint: 'ex: 22951469075',
+                    label: 'Numéro de téléphone',
+                    hint: '22951469075',
                     keyboardType: TextInputType.phone,
                     inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                    prefixIcon: Icons.phone_android,
+                    prefixIcon: Icons.phone_iphone_rounded,
                   ),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: AppSpacing.lg),
                   AuthTextField(
                     controller: emailController,
                     label: 'E-mail (optionnel)',
                     keyboardType: TextInputType.emailAddress,
-                    prefixIcon: Icons.mail_outline,
+                    prefixIcon: Icons.mail_outline_rounded,
                   ),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: AppSpacing.lg),
                   AuthTextField(
                     controller: pinController,
-                    label: 'Code PIN (4 à 8 chiffres)',
+                    label: 'Code PIN',
+                    hint: '4 à 8 chiffres',
                     keyboardType: TextInputType.number,
                     inputFormatters: [
                       FilteringTextInputFormatter.digitsOnly,
                       LengthLimitingTextInputFormatter(8),
                     ],
-                    prefixIcon: Icons.lock_outline,
+                    prefixIcon: Icons.lock_outline_rounded,
                     obscureText: obscurePin,
                     suffix: IconButton(
                       icon: Icon(
-                        obscurePin ? Icons.visibility_off : Icons.visibility,
-                        color: Colors.white38,
+                        obscurePin
+                            ? Icons.visibility_off_outlined
+                            : Icons.visibility_outlined,
+                        color: context.colors.textMuted,
                         size: 20,
                       ),
                       onPressed: () => setState(() => obscurePin = !obscurePin),
                     ),
                   ),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: AppSpacing.lg),
                   AuthTextField(
                     controller: pinConfirmController,
                     label: 'Confirmez le PIN',
@@ -162,48 +167,23 @@ class _RegisterPageState extends State<RegisterPage> {
                       FilteringTextInputFormatter.digitsOnly,
                       LengthLimitingTextInputFormatter(8),
                     ],
-                    prefixIcon: Icons.lock_outline,
+                    prefixIcon: Icons.lock_outline_rounded,
                     obscureText: obscurePin,
                     onSubmitted: (_) => _submit(),
                   ),
                   if (errorMessage != null) ...[
-                    const SizedBox(height: 14),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 10),
-                      decoration: BoxDecoration(
-                        color: const Color(0x22FF5252),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: const Color(0x66FF5252)),
-                      ),
-                      child: Text(
-                        errorMessage!,
-                        style: const TextStyle(
-                            color: Color(0xFFFF8A80), fontSize: 13),
-                      ),
+                    const SizedBox(height: AppSpacing.lg),
+                    InfoBanner(
+                      message: errorMessage!,
+                      tone: Tone.danger,
+                      icon: Icons.error_outline_rounded,
                     ),
                   ],
-                  const SizedBox(height: 24),
-                  ElevatedButton(
-                    onPressed: submitting ? null : _submit,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: _accent,
-                      foregroundColor: Colors.black,
-                      disabledBackgroundColor: Colors.grey,
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(30)),
-                      textStyle: const TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.bold),
-                    ),
-                    child: submitting
-                        ? const SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2, color: Colors.black),
-                          )
-                        : const Text('Créer mon compte'),
+                  const SizedBox(height: AppSpacing.xl),
+                  PrimaryButton(
+                    label: 'Créer mon compte',
+                    loading: submitting,
+                    onPressed: _submit,
                   ),
                 ],
               ),

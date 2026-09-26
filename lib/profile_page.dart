@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 
 import 'api_client.dart';
-
-const Color _accent = Color(0xFFFE6F0B);
+import 'theme.dart';
+import 'ui_kit.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -88,111 +88,117 @@ class _ProfilePageState extends State<ProfilePage> {
 
   @override
   Widget build(BuildContext context) {
+    final c = context.colors;
+
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Profil'),
-        backgroundColor: Colors.black,
-      ),
-      backgroundColor: Colors.black,
+      appBar: AppBar(title: const Text('Profil')),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.lg,
+          AppSpacing.sm,
+          AppSpacing.lg,
+          AppSpacing.xxl,
+        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const SizedBox(height: 8),
-            const CircleAvatar(
-              radius: 38,
-              backgroundColor: _accent,
-              child: Icon(Icons.person, color: Colors.black, size: 42),
+            // Bandeau d'identité
+            AppCard(
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.lg,
+                vertical: AppSpacing.xl,
+              ),
+              child: Column(
+                children: [
+                  Container(
+                    width: 76,
+                    height: 76,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFFFF8A3D), kBrand],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(AppRadius.lg),
+                      boxShadow: [
+                        BoxShadow(
+                          color: kBrand.withValues(alpha: 0.28),
+                          blurRadius: 18,
+                          offset: const Offset(0, 8),
+                        ),
+                      ],
+                    ),
+                    child: Icon(Icons.person_rounded,
+                        color: c.onBrand, size: 38),
+                  ),
+                  const SizedBox(height: AppSpacing.lg),
+                  Text(
+                    user?.name ?? 'Utilisateur',
+                    textAlign: TextAlign.center,
+                    style: context.text.headlineSmall,
+                  ),
+                  const SizedBox(height: AppSpacing.xs),
+                  Text(
+                    user != null ? '+${user!.phone}' : '',
+                    textAlign: TextAlign.center,
+                    style: context.text.bodyMedium?.copyWith(
+                      fontFeatures: kTabularFigures,
+                    ),
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: 14),
-            Text(
-              user?.name ?? 'Utilisateur',
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold),
+
+            const SizedBox(height: AppSpacing.xl),
+            const SectionLabel('Informations personnelles'),
+            AppCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: nameController,
+                    style: context.text.bodyLarge,
+                    cursorColor: c.brand,
+                    decoration: const InputDecoration(labelText: 'Nom complet'),
+                  ),
+                  const SizedBox(height: AppSpacing.lg),
+                  TextField(
+                    controller: emailController,
+                    keyboardType: TextInputType.emailAddress,
+                    style: context.text.bodyLarge,
+                    cursorColor: c.brand,
+                    decoration:
+                        const InputDecoration(labelText: 'E-mail (optionnel)'),
+                  ),
+                  const SizedBox(height: AppSpacing.md),
+                  Text(
+                    'Le numéro de téléphone est votre identifiant de connexion '
+                    'et ne peut pas être modifié.',
+                    style: context.text.bodySmall,
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: 4),
-            Text(
-              user != null ? '+${user!.phone}' : '',
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white54, fontSize: 14),
-            ),
-            const SizedBox(height: 28),
-            TextField(
-              controller: nameController,
-              style: const TextStyle(color: Colors.white),
-              cursorColor: _accent,
-              decoration: _fieldDecoration('Nom complet'),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: emailController,
-              keyboardType: TextInputType.emailAddress,
-              style: const TextStyle(color: Colors.white),
-              cursorColor: _accent,
-              decoration: _fieldDecoration('E-mail (optionnel)'),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Le numéro de téléphone est votre identifiant de connexion et ne peut pas être modifié.',
-              style: TextStyle(color: Colors.white38, fontSize: 12),
-            ),
+
             if (feedback != null) ...[
-              const SizedBox(height: 14),
-              Text(
-                feedback!,
-                style: TextStyle(
-                  color: feedbackIsError
-                      ? const Color(0xFFFF8A80)
-                      : const Color(0xFF33D17A),
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
+              const SizedBox(height: AppSpacing.lg),
+              InfoBanner(
+                message: feedback!,
+                tone: feedbackIsError ? Tone.danger : Tone.success,
+                icon: feedbackIsError
+                    ? Icons.error_outline_rounded
+                    : Icons.check_circle_outline_rounded,
               ),
             ],
-            const SizedBox(height: 22),
-            ElevatedButton(
-              onPressed: saving ? null : _save,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _accent,
-                foregroundColor: Colors.black,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(28)),
-                textStyle: const TextStyle(
-                    fontSize: 16, fontWeight: FontWeight.bold),
-              ),
-              child: saving
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Colors.black),
-                    )
-                  : const Text('Enregistrer'),
+
+            const SizedBox(height: AppSpacing.xl),
+            PrimaryButton(
+              label: 'Enregistrer',
+              loading: saving,
+              onPressed: _save,
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  InputDecoration _fieldDecoration(String label) {
-    return InputDecoration(
-      filled: true,
-      fillColor: const Color(0xFF1C1C1C),
-      labelText: label,
-      labelStyle: const TextStyle(color: Colors.white70, fontSize: 14),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(10),
-        borderSide: const BorderSide(color: Color(0x44FE6F0B)),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(10),
-        borderSide: const BorderSide(color: _accent, width: 2),
       ),
     );
   }

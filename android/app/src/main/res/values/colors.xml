@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fond de l'écran de lancement, accordé au thème clair de l'application
+         (AppColors.light.canvas dans lib/theme.dart). Sans cela, Android
+         affiche un fond noir avant le premier écran Flutter : le lancement
+         donne l'impression d'un plantage. -->
+    <color name="splash_background">#F5F6F8</color>
+</resources>
