@@ -31,5 +31,19 @@ services:
         value: "false"
       - key: VERIFY_CALLBACK_SIGNATURE
         value: "false"
+      # FedaPay — rail secondaire, seul à couvrir Celtis Bénin (absent de
+      # PawaPay). Sans FEDAPAY_SECRET_KEY, Celtis est annoncé comme
+      # indisponible à l'envoi comme à la réception.
+      - key: FEDAPAY_SECRET_KEY
+        sync: false
+      - key: FEDAPAY_BASE
+        value: https://sandbox-api.fedapay.com/v1
+      # Droits à faire ouvrir par le support FedaPay sur le compte, puis à
+      # passer à "true" ici. Vérifié le 25/09/2026 : les deux sont fermés
+      # (charge directe -> HTTP 400, payout -> HTTP 403).
+      - key: FEDAPAY_PAYOUTS_ENABLED
+        value: "false"
+      - key: FEDAPAY_DIRECT_CHARGE_ENABLED
+        value: "false"
       # PORT n'est pas défini ici : Render l'injecte automatiquement et
       # server.js le lit déjà via process.env.PORT.

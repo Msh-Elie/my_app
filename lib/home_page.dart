@@ -357,6 +357,11 @@ Map<String, String> providerCodes = {};
 // plutôt que de laisser l'utilisateur échouer au dernier moment.
 Map<String, bool> providerPayoutCapable = {};
 
+// libellé -> l'opérateur sait-il *émettre* un paiement ? Symétrique du
+// précédent : un rail dont la clé d'API n'est pas configurée côté serveur ne
+// peut servir ni de source ni de destination.
+Map<String, bool> providerDepositCapable = {};
+
 /// Charge la liste des opérateurs réellement disponibles chez PawaPay.
 /// En cas d'échec (hors-ligne), la liste statique ci-dessus reste utilisée.
 Future<void> _loadProviders() async {
@@ -372,6 +377,7 @@ Future<void> _loadProviders() async {
     final newPrefixes = <String, String>{};
     final newCodes = <String, String>{};
     final newPayoutCapable = <String, bool>{};
+    final newDepositCapable = <String, bool>{};
     for (final p in list) {
       final label = p['label']?.toString() ?? '';
       final code = p['code']?.toString() ?? '';
@@ -384,6 +390,8 @@ Future<void> _loadProviders() async {
       final caps = p['capabilities'];
       newPayoutCapable[label] =
           caps is Map ? caps['payout'] != false : true;
+      newDepositCapable[label] =
+          caps is Map ? caps['deposit'] != false : true;
     }
     if (newProviders.isEmpty || !mounted) return;
 
@@ -392,6 +400,7 @@ Future<void> _loadProviders() async {
       providerPrefixes = newPrefixes;
       providerCodes = newCodes;
       providerPayoutCapable = newPayoutCapable;
+      providerDepositCapable = newDepositCapable;
       if (!providers.contains(selectedFrom)) selectedFrom = providers.first;
       if (!providers.contains(selectedTo)) selectedTo = providers.first;
       _rememberOperatorSelection();
@@ -828,6 +837,22 @@ static const List<String> _stepLabels = [
 /// se faire refuser au moment de l'envoi.
 bool get destinationCanReceive => providerPayoutCapable[selectedTo] ?? true;
 
+/// L'opérateur de départ sait-il émettre un paiement ?
+bool get sourceCanSend => providerDepositCapable[selectedFrom] ?? true;
+
+/// Message expliquant pourquoi le trajet choisi est refusé, s'il l'est.
+String? get blockedRouteMessage {
+  if (!sourceCanSend) {
+    return '$selectedFrom ne peut pas encore émettre de transfert. '
+        'Choisissez un autre opérateur de départ.';
+  }
+  if (!destinationCanReceive) {
+    return '$selectedTo ne peut pas encore recevoir de transfert. '
+        'Choisissez un autre opérateur de destination.';
+  }
+  return null;
+}
+
 @override
 Widget build(BuildContext context) {
   final c = context.colors;
@@ -1175,11 +1200,10 @@ Widget _buildOperatorStep() {
             ],
           ),
         ),
-        if (!destinationCanReceive) ...[
+        if (blockedRouteMessage != null) ...[
           const SizedBox(height: AppSpacing.md),
           InfoBanner(
-            message: '$selectedTo ne peut pas encore recevoir de transfert. '
-                'Choisissez un autre opérateur de destination.',
+            message: blockedRouteMessage!,
             tone: Tone.warning,
             icon: Icons.block_rounded,
           ),
@@ -1784,7 +1808,7 @@ Widget _buildResultStep() {
 
 Widget _buildBottomBar() {
   final c = context.colors;
-  final blockedDestination = stepIndex < 4 && !destinationCanReceive;
+  final blockedRoute = stepIndex < 4 && blockedRouteMessage != null;
 
   return Container(
     padding: const EdgeInsets.fromLTRB(
@@ -1802,7 +1826,7 @@ Widget _buildBottomBar() {
       children: [
         PrimaryButton(
           label: continueLabel,
-          onPressed: (isContinueActive && !blockedDestination)
+          onPressed: (isContinueActive && !blockedRoute)
               ? () {
                   if (stepIndex == 4) {
                     _resetTransferFlow();
