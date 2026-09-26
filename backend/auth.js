@@ -5,7 +5,7 @@
 // HMAC-SHA256 au format JWT (header.payload.signature en base64url).
 import crypto from 'crypto';
 import express from 'express';
-import { userQueries } from './db.js';
+import { users } from './db.js';
 
 const AUTH_SECRET = process.env.AUTH_SECRET || '';
 const TOKEN_TTL_SECONDS = Number(process.env.AUTH_TOKEN_TTL_SECONDS || 60 * 60 * 24 * 30); // 30 jours
@@ -87,28 +87,37 @@ function validPin(pin) {
 }
 
 // --- Middlewares ---
-export function requireAuth(req, res, next) {
+export async function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   const payload = verifyToken(token);
   if (!payload || !payload.sub) {
     return res.status(401).json({ error: 'unauthorized', message: 'Jeton manquant ou invalide' });
   }
-  const user = userQueries.byId.get(payload.sub);
-  if (!user) {
-    return res.status(401).json({ error: 'unauthorized', message: 'Utilisateur inconnu' });
+  try {
+    const user = await users.byId(payload.sub);
+    if (!user) {
+      return res.status(401).json({ error: 'unauthorized', message: 'Utilisateur inconnu' });
+    }
+    req.user = sanitizeUser(user);
+    return next();
+  } catch (err) {
+    console.error('Erreur requireAuth', err);
+    return res.status(503).json({ error: 'database_unavailable', message: 'Base de donnees injoignable' });
   }
-  req.user = sanitizeUser(user);
-  next();
 }
 
-export function optionalAuth(req, _res, next) {
+export async function optionalAuth(req, _res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   const payload = verifyToken(token);
   if (payload && payload.sub) {
-    const user = userQueries.byId.get(payload.sub);
-    if (user) req.user = sanitizeUser(user);
+    try {
+      const user = await users.byId(payload.sub);
+      if (user) req.user = sanitizeUser(user);
+    } catch (err) {
+      console.error('Erreur optionalAuth', err);
+    }
   }
   next();
 }
@@ -116,7 +125,7 @@ export function optionalAuth(req, _res, next) {
 // --- Routes ---
 export const authRouter = express.Router();
 
-authRouter.post('/register', (req, res) => {
+authRouter.post('/register', async (req, res) => {
   try {
     const name = String(req.body?.name || '').trim();
     const phone = normalizePhone(req.body?.phone);
@@ -132,22 +141,23 @@ authRouter.post('/register', (req, res) => {
     if (!validPin(pin)) {
       return res.status(400).json({ error: 'invalid_pin', message: 'Le PIN doit contenir 4 à 8 chiffres' });
     }
-    if (userQueries.byPhone.get(phone)) {
+    if (await users.byPhone(phone)) {
       return res.status(409).json({ error: 'phone_taken', message: 'Un compte existe déjà avec ce numéro' });
     }
 
     const { hash, salt } = hashPin(pin);
-    let info;
+    let user;
     try {
-      info = userQueries.insert.run({ phone, name, email, pinHash: hash, pinSalt: salt });
+      user = await users.insert({ phone, name, email, pinHash: hash, pinSalt: salt });
     } catch (err) {
-      // course possible : deux inscriptions simultanées avec le même numéro
-      if (String(err?.code || '').startsWith('SQLITE_CONSTRAINT')) {
+      // course possible : deux inscriptions simultanées avec le même numéro.
+      // SQLite renvoie SQLITE_CONSTRAINT*, PostgreSQL le code 23505.
+      const code = String(err?.code || '');
+      if (code.startsWith('SQLITE_CONSTRAINT') || code === '23505') {
         return res.status(409).json({ error: 'phone_taken', message: 'Un compte existe déjà avec ce numéro' });
       }
       throw err;
     }
-    const user = userQueries.byId.get(info.lastInsertRowid);
     const token = signToken({ sub: user.id, phone: user.phone });
     return res.status(201).json({ token, user: sanitizeUser(user) });
   } catch (err) {
@@ -156,11 +166,11 @@ authRouter.post('/register', (req, res) => {
   }
 });
 
-authRouter.post('/login', (req, res) => {
+authRouter.post('/login', async (req, res) => {
   try {
     const phone = normalizePhone(req.body?.phone);
     const pin = String(req.body?.pin || '');
-    const user = userQueries.byPhone.get(phone);
+    const user = await users.byPhone(phone);
     if (!user || !pinMatches(pin, user.pin_hash, user.pin_salt)) {
       // même message dans les deux cas pour ne pas révéler l'existence du compte
       return res.status(401).json({ error: 'invalid_credentials', message: 'Numéro ou PIN incorrect' });
@@ -177,15 +187,14 @@ authRouter.get('/me', requireAuth, (req, res) => {
   res.json({ user: req.user });
 });
 
-authRouter.put('/profile', requireAuth, (req, res) => {
+authRouter.put('/profile', requireAuth, async (req, res) => {
   try {
     const name = String(req.body?.name ?? req.user.name).trim();
     const email = String(req.body?.email ?? req.user.email ?? '').trim() || null;
     if (name.length < 2) {
       return res.status(400).json({ error: 'invalid_name', message: 'Nom trop court' });
     }
-    userQueries.updateProfile.run({ id: req.user.id, name, email });
-    const user = userQueries.byId.get(req.user.id);
+    const user = await users.updateProfile({ id: req.user.id, name, email });
     return res.json({ user: sanitizeUser(user) });
   } catch (err) {
     console.error('Erreur /api/auth/profile', err);
@@ -193,19 +202,19 @@ authRouter.put('/profile', requireAuth, (req, res) => {
   }
 });
 
-authRouter.put('/pin', requireAuth, (req, res) => {
+authRouter.put('/pin', requireAuth, async (req, res) => {
   try {
     const currentPin = String(req.body?.currentPin || '');
     const newPin = String(req.body?.newPin || '');
     if (!validPin(newPin)) {
       return res.status(400).json({ error: 'invalid_pin', message: 'Le nouveau PIN doit contenir 4 à 8 chiffres' });
     }
-    const user = userQueries.byId.get(req.user.id);
+    const user = await users.byId(req.user.id);
     if (!pinMatches(currentPin, user.pin_hash, user.pin_salt)) {
       return res.status(401).json({ error: 'invalid_credentials', message: 'PIN actuel incorrect' });
     }
     const { hash, salt } = hashPin(newPin);
-    userQueries.updatePin.run({ id: req.user.id, pinHash: hash, pinSalt: salt });
+    await users.updatePin({ id: req.user.id, pinHash: hash, pinSalt: salt });
     return res.json({ ok: true });
   } catch (err) {
     console.error('Erreur /api/auth/pin', err);

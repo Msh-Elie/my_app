@@ -9,6 +9,14 @@ services:
     healthCheckPath: /healthz
     autoDeploy: true
     envVars:
+      # OBLIGATOIRE en production. Sans cette variable, le backend retombe sur
+      # SQLite — or le disque d'une instance gratuite est éphémère : elle
+      # s'arrête après 15 min d'inactivité et redémarre à vide, ce qui efface
+      # tous les comptes créés. Coller ici la chaîne de connexion d'une base
+      # PostgreSQL gérée (Neon, Supabase…), au format :
+      #   postgresql://utilisateur:motdepasse@hote/base?sslmode=require
+      - key: DATABASE_URL
+        sync: false
       - key: PAWA_TOKEN
         sync: false
       - key: PAWA_BASE

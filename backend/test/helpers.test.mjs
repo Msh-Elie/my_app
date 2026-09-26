@@ -98,21 +98,21 @@ test('verifySignature ne lève pas sur longueurs différentes', () => {
   assert.equal(verifySignature(null, 'x'), false);
 });
 
-test('transactionStore persiste et relit les transactions', () => {
+test('transactionStore persiste et relit les transactions', async () => {
   const id = `test-${Date.now()}`;
-  transactions.set(id, { type: 'transfer', status: 'ACCEPTED', userId: 42, meta: { amount: 1000 } });
-  const tx = transactions.get(id);
+  await transactions.set(id, { type: 'transfer', status: 'ACCEPTED', userId: 42, meta: { amount: 1000 } });
+  const tx = await transactions.get(id);
   assert.equal(tx.status, 'ACCEPTED');
   assert.equal(tx.meta.amount, 1000);
 
   // mise à jour
   tx.status = 'COMPLETED';
-  transactions.set(id, tx);
-  assert.equal(transactions.get(id).status, 'COMPLETED');
+  await transactions.set(id, tx);
+  assert.equal((await transactions.get(id)).status, 'COMPLETED');
 
   // filtrage par utilisateur
-  const mine = transactions.entriesForUser(42).map(([txId]) => txId);
+  const mine = (await transactions.entriesForUser(42)).map(([txId]) => txId);
   assert.ok(mine.includes(id));
-  const others = transactions.entriesForUser(999).map(([txId]) => txId);
+  const others = (await transactions.entriesForUser(999)).map(([txId]) => txId);
   assert.ok(!others.includes(id));
 });

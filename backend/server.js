@@ -23,11 +23,21 @@ if (result.error) {
 
 // db.js et auth.js lisent process.env : l'import dynamique après dotenv.config
 // garantit que .env est chargé avant l'initialisation de ces modules.
-const { transactionStore, userQueries } = await import("./db.js");
+const { transactionStore, users, driver: dbDriver } = await import("./db.js");
 const { authRouter, requireAuth, optionalAuth } = await import("./auth.js");
 // Lookup des bénéficiaires fusionné dans ce process (plus de second service
 // à déployer/maintenir séparément) — voir backend/recipient_lookup.js
 const { lookupRecipientSync } = await import("./recipient_lookup.js");
+// Rail de paiement secondaire, utilisé uniquement pour Celtis Bénin (PawaPay
+// ne l'intègre pas du tout) — voir backend/fedapay.js
+const fedapay = await import("./fedapay.js");
+
+// Détermine quel prestataire traite un opérateur donné. Extensible : ajouter
+// une entrée ici (et dans fedapay.isCeltisProvider ou un module équivalent)
+// suffit pour router un nouvel opérateur non couvert par PawaPay.
+function resolveRail(providerLabel) {
+  return fedapay.isCeltisProvider(providerLabel) ? 'fedapay' : 'pawapay';
+}
 
 const app = express();
 app.use(cors());
@@ -155,10 +165,10 @@ function formatDateDDMMYYYY(dateValue) {
   return `${dd}/${mm}/${yyyy}`;
 }
 
-function buildHistoryItems(limit = 50, userId = null) {
+async function buildHistoryItems(limit = 50, userId = null) {
   const source = userId != null
-    ? transactions.entriesForUser(userId)
-    : Array.from(transactions.entries());
+    ? await transactions.entriesForUser(userId)
+    : await transactions.entries();
   const entries = source
     .map(([id, tx]) => ({ id, tx }))
     .filter(({ tx }) => tx && tx.type === 'transfer');
@@ -482,13 +492,45 @@ function computeFee(amount) {
 // === Création d'un payout vers le destinataire (générique)
 // `purpose` permet de distinguer le paiement principal, le versement des frais
 // ou la part due à Pawapay.  Il est ajouté à la note et aux metadata.
-async function createPayoutForTransfer(txId, payoutAmount, receiverPhone, receiverProvider, purpose = 'transfer') {
+async function createPayoutForTransfer(txId, payoutAmount, receiverPhone, receiverProvider, purpose = 'transfer', rail = 'pawapay') {
   const payoutId = uuidv4();
   const noteText = purpose === 'fee'
     ? 'Payout frais'
     : purpose === 'pawapay'
       ? 'Payout Pawapay'
       : 'Payout transfer';
+
+  if (rail === 'fedapay') {
+    console.log(`📤 Création payout FedaPay (${purpose}) pour transfer ${txId}`);
+    try {
+      const result = await fedapay.fedapayInitiatePayout({
+        amount: payoutAmount,
+        currency: 'XOF',
+        phoneNumber: receiverPhone,
+        description: noteText,
+        merchantReference: `SM-${txId}-${purpose}`,
+      });
+      console.log('📥 Réponse Payout FedaPay:', JSON.stringify(result.raw, null, 2));
+
+      const tx = await transactions.get(txId) || {};
+      tx.payoutInitiated = true;
+      tx.payout = result.raw;
+      tx.payoutId = payoutId;
+      tx.payoutProviderId = result.providerPayoutId;
+      tx.payoutRail = 'fedapay';
+      tx.payoutStatus = result.status;
+      await transactions.set(txId, tx);
+
+      return { payoutId, pawaResponse: result.raw, status: 200 };
+    } catch (err) {
+      console.error('Erreur createPayoutForTransfer (fedapay)', err);
+      const tx = await transactions.get(txId) || {};
+      tx.payoutInitiated = false;
+      tx.payoutError = String(err);
+      await transactions.set(txId, tx);
+      return { error: String(err) };
+    }
+  }
 
   const payoutBody = {
     payoutId,
@@ -520,59 +562,60 @@ async function createPayoutForTransfer(txId, payoutAmount, receiverPhone, receiv
     const data = await r.json();
     console.log("📥 Réponse Payout automatique:", JSON.stringify(data, null, 2));
 
-    const tx = transactions.get(txId) || {};
+    const tx = await transactions.get(txId) || {};
     tx.payoutInitiated = true;
     tx.payout = data;
     tx.payoutId = payoutId;
     tx.payoutStatus = data.status || (r.ok ? "PENDING" : "FAILED");
-    transactions.set(txId, tx);
+    await transactions.set(txId, tx);
 
     return { payoutId, pawaResponse: data, status: r.status };
   } catch (err) {
     console.error("Erreur createPayoutForTransfer", err);
-    const tx = transactions.get(txId) || {};
+    const tx = await transactions.get(txId) || {};
     tx.payoutInitiated = false;
     tx.payoutError = String(err);
-    transactions.set(txId, tx);
+    await transactions.set(txId, tx);
     return { error: String(err) };
   }
 }
 
 // === Helper pour créer toutes les payouts reliées à un transfert ===
 async function initiatePayoutsForTransfer(txId) {
-  const tx = transactions.get(txId);
+  const tx = await transactions.get(txId);
   if (!tx || tx.type !== 'transfer' || tx.payoutInitiated) return null;
 
   const meta = tx.meta || {};
-  const { receiverPhone, receiverProvider, senderPhone, senderProvider, fee, payoutAmount } = meta;
+  const { receiverPhone, receiverProvider, senderPhone, senderProvider, fee, payoutAmount, payoutRail } = meta;
   const results = {};
 
-  // paiement principal au destinataire
-  results.main = await createPayoutForTransfer(txId, payoutAmount, receiverPhone, receiverProvider, 'transfer');
+  // paiement principal au destinataire : rail selon l'opérateur du destinataire
+  results.main = await createPayoutForTransfer(txId, payoutAmount, receiverPhone, receiverProvider, 'transfer', payoutRail || 'pawapay');
 
-  // envoi des frais au numéro configuré (ou défaut)
+  // envoi des frais au numéro configuré (ou défaut) — toujours via PawaPay
+  // (numéro opérationnel fixe du développeur, jamais un compte Celtis)
   if (fee && fee > 0 && FEE_RECIPIENT) {
     const providerForFee = senderProvider || receiverProvider || '';
-    results.fee = await createPayoutForTransfer(txId, fee, FEE_RECIPIENT, providerForFee, 'fee');
+    results.fee = await createPayoutForTransfer(txId, fee, FEE_RECIPIENT, providerForFee, 'fee', 'pawapay');
   }
 
-  // part due à Pawapay, si configurée
+  // part due à Pawapay, si configurée — toujours via PawaPay également
   if (PAWAPAY_RECEIVER) {
     // par défaut on envoie le même montant que les frais, mais cela peut être
     // modifié pour correspondre à votre modèle tarifaire
     const pawapayAmt = fee || 0;
     const pawapayProvider = PAWAPAY_PROVIDER || senderProvider || receiverProvider || '';
-    results.pawapay = await createPayoutForTransfer(txId, pawapayAmt, PAWAPAY_RECEIVER, pawapayProvider, 'pawapay');
+    results.pawapay = await createPayoutForTransfer(txId, pawapayAmt, PAWAPAY_RECEIVER, pawapayProvider, 'pawapay', 'pawapay');
   }
 
   // Depuis le passage à SQLite, get() renvoie une copie : on relit la
   // transaction pour ne pas écraser les champs (payoutStatus, payoutId…)
   // écrits par createPayoutForTransfer pendant les awaits ci-dessus.
-  const freshTx = transactions.get(txId) || tx;
+  const freshTx = await transactions.get(txId) || tx;
   freshTx.payouts = freshTx.payouts || [];
   freshTx.payouts.push({ extra: results });
   freshTx.payoutInitiated = true;
-  transactions.set(txId, freshTx);
+  await transactions.set(txId, freshTx);
   return results;
 }
 
@@ -582,7 +625,21 @@ async function initiatePayoutsForTransfer(txId) {
 // Les callbacks sandbox ne peuvent pas atteindre une machine locale sans
 // tunnel public : on interroge donc directement l'API PawaPay jusqu'à
 // obtenir un statut définitif, puis on déclenche les payouts.
-async function fetchDepositStatus(depositId) {
+// Renvoie toujours la même forme { status, raw }, quel que soit le
+// prestataire — c'est ce qui permet à refreshTransferStatus de rester
+// agnostique du rail (PawaPay ou FedaPay).
+async function fetchDepositStatus(depositId, tx) {
+  if (tx?.meta?.depositRail === 'fedapay') {
+    const providerTransactionId = tx.deposit?.providerTransactionId;
+    if (!providerTransactionId) return null;
+    try {
+      return await fedapay.fedapayCheckDepositStatus(providerTransactionId);
+    } catch (err) {
+      console.error('Erreur fetchDepositStatus (fedapay)', depositId, String(err));
+      return null;
+    }
+  }
+
   try {
     const r = await fetch(`${PAWA_BASE}/deposits/${depositId}`, {
       headers: { 'Authorization': `Bearer ${PAWA_TOKEN}` }
@@ -591,7 +648,8 @@ async function fetchDepositStatus(depositId) {
     if (!raw) return null;
     // v2 renvoie { data: {...} } ; on reste tolérant aux autres formes
     const dep = raw?.data ?? (Array.isArray(raw) ? raw[0] : raw);
-    return dep && typeof dep === 'object' ? dep : null;
+    if (!dep || typeof dep !== 'object' || !dep.status) return null;
+    return { status: String(dep.status).toUpperCase(), raw: dep };
   } catch (err) {
     console.error('Erreur fetchDepositStatus', depositId, String(err));
     return null;
@@ -599,25 +657,25 @@ async function fetchDepositStatus(depositId) {
 }
 
 async function refreshTransferStatus(depositId) {
-  const tx = transactions.get(depositId);
+  const tx = await transactions.get(depositId);
   if (!tx) return null;
 
   const current = String(tx.status || '').toUpperCase();
   const alreadyFinal = FINAL_SUCCESS_STATUSES.has(current) || FINAL_FAILURE_STATUSES.has(current);
   if (alreadyFinal && (tx.type !== 'transfer' || tx.payoutInitiated)) return tx;
 
-  const dep = await fetchDepositStatus(depositId);
-  if (dep && dep.status) {
-    tx.status = String(dep.status).toUpperCase();
-    tx.deposit = { ...(tx.deposit || {}), ...dep };
+  const result = await fetchDepositStatus(depositId, tx);
+  if (result && result.status) {
+    tx.status = result.status;
+    tx.lastStatusCheck = result.raw;
     tx.updatedAt = new Date().toISOString();
-    transactions.set(depositId, tx);
+    await transactions.set(depositId, tx);
     if (tx.type === 'transfer' && !tx.payoutInitiated && FINAL_SUCCESS_STATUSES.has(tx.status)) {
       console.log(`🔔 Deposit ${depositId} complété (polling), création des payouts`);
       await initiatePayoutsForTransfer(depositId);
     }
   }
-  return transactions.get(depositId);
+  return await transactions.get(depositId);
 }
 
 const activePolls = new Set();
@@ -702,7 +760,7 @@ app.post("/api/deposits", requireAuth, async (req, res) => {
     const data = await r.json();
     console.log("📥 Réponse de PawaPay:", JSON.stringify(data, null, 2));
     
-    transactions.set(depositId, { type: "deposit", userId: req.user.id, status: data.status || "PENDING", deposit: data });
+    await transactions.set(depositId, { type: "deposit", userId: req.user.id, status: data.status || "PENDING", deposit: data });
     res.status(r.status).json({ depositId, pawaResponse: data });
 
   } catch (err) {
@@ -757,7 +815,7 @@ app.post("/api/payouts", requireAuth, async (req, res) => {
     const data = await r.json();
     console.log("📥 Réponse de PawaPay:", JSON.stringify(data, null, 2));
     
-    transactions.set(payoutId, { type: "payout", userId: req.user.id, status: data.status || "PENDING", payout: data });
+    await transactions.set(payoutId, { type: "payout", userId: req.user.id, status: data.status || "PENDING", payout: data });
     res.status(r.status).json({ payoutId, pawaResponse: data });
 
   } catch (err) {
@@ -784,79 +842,138 @@ app.post("/api/transfer", requireAuth, async (req, res) => {
     const payoutAmount = Number(amount) - fee;
     if (payoutAmount <= 0) return res.status(400).json({ error: "Amount insufficient after fees" });
 
-    // Déterminer l'origine du phone pour chercher active-conf
+    // Déterminer l'origine du phone pour chercher active-conf / devise par défaut
     const prefix = String((payer?.accountDetails?.phoneNumber || senderPhone || '').slice(0, 3));
     const prefixInfo = prefixToCountry[prefix] || null;
     const country = prefixInfo ? prefixInfo.country : null;
     const defaultCurrency = prefixInfo ? prefixInfo.currency : (clientCurrency || 'XOF');
+    const currency = clientCurrency || defaultCurrency;
 
-    // Résoudre le provider pour Pawapay
-    let providerCode;
-    if (payer?.accountDetails?.provider) {
-      // si c'est déjà un code plausiblement correct (contient underscore),
-      // on le fait néanmoins passer par la fonction de mapping pour éviter
-      // d'envoyer à PawaPay un code erroné comme "MTN_BJ".
-      const prov = payer.accountDetails.provider;
-      if (typeof prov === 'string' && prov.includes('_') && prov === prov.toUpperCase()) {
-        providerCode = mapProviderToPawaPay(prov);
-      } else {
-        // essayer via active-conf si possible
-        const conf = await fetchActiveConf(country);
-        providerCode = findProviderCodeInConf(conf, String(prov));
-        if (!providerCode) providerCode = mapProviderToPawaPay(String(prov));
-      }
-    } else if (senderProvider) {
-      const conf = await fetchActiveConf(country);
-      providerCode = findProviderCodeInConf(conf, String(senderProvider)) || mapProviderToPawaPay(String(senderProvider));
-    } else {
-      return res.status(400).json({ error: 'Provider or payer required' });
+    // Routage : Celtis Bénin n'existe pas chez PawaPay, on bascule ce
+    // transfert (ou seulement le payout) vers FedaPay — voir resolveRail().
+    const senderProviderRawLabel = String(payer?.accountDetails?.provider || senderProvider || '');
+    const receiverProviderRawLabel = String(receiverProvider || '');
+    const depositRail = resolveRail(senderProviderRawLabel);
+    const payoutRail = resolveRail(receiverProviderRawLabel);
+
+    // GARDE-FOU : ne jamais débiter un expéditeur si le rail du destinataire
+    // ne sait pas décaisser. Sans ce contrôle, un transfert vers Celtis
+    // réussit le dépôt puis échoue au payout (FedaPay 403) : l'argent est
+    // prélevé sans jamais être livré. On refuse donc en amont.
+    if (payoutRail === 'fedapay' && !fedapay.fedapayPayoutsAvailable()) {
+      console.warn(`⛔ Transfert refusé : destination ${receiverProviderRawLabel} non décaissable.`);
+      return res.status(503).json({
+        error: 'payout_rail_unavailable',
+        provider: receiverProviderRawLabel,
+        message: `${receiverProviderRawLabel} ne peut pas encore recevoir de transfert. `
+          + 'Aucun montant n\'a été prélevé.',
+        details: fedapay.fedapayPayoutUnavailableReason(),
+      });
     }
 
-    // Construire le body Pawapay conforme à la doc
-    const depositBody = {
-      depositId,
-      payer: {
-        type: 'MMO',
-        accountDetails: {
+    let providerCode = null; // uniquement pertinent pour le rail PawaPay
+    let depData;
+    let isDepositRequestOk;
+    let depResStatusCode = 502; // code HTTP renvoyé au client en cas d'échec
+
+    if (depositRail === 'fedapay') {
+      console.log(`🔄 Transfert (deposit) routé vers FedaPay (expéditeur: ${senderProviderRawLabel})`);
+      try {
+        const result = await fedapay.fedapayInitiateDeposit({
+          amount,
+          currency,
           phoneNumber: payer?.accountDetails?.phoneNumber || senderPhone,
-          provider: providerCode
+          description: `Transfert ${senderProviderRawLabel} -> ${receiverProviderRawLabel}`,
+        });
+        depData = {
+          status: result.status,
+          currency,
+          provider: 'fedapay',
+          providerTransactionId: result.providerTransactionId,
+          // Présent quand la charge directe n'est pas ouverte sur le compte :
+          // l'app doit ouvrir cette page pour que le client valide son paiement.
+          checkoutUrl: result.checkoutUrl,
+          requiresCustomerAction: result.requiresCustomerAction === true,
+          mode: result.mode,
+          raw: result.raw,
+        };
+        isDepositRequestOk = result.status !== 'FAILED';
+      } catch (err) {
+        console.error('Erreur dépôt FedaPay', err);
+        depData = { status: 'FAILED', error: String(err) };
+        isDepositRequestOk = false;
+      }
+    } else {
+      // Résoudre le provider pour Pawapay
+      if (payer?.accountDetails?.provider) {
+        // si c'est déjà un code plausiblement correct (contient underscore),
+        // on le fait néanmoins passer par la fonction de mapping pour éviter
+        // d'envoyer à PawaPay un code erroné comme "MTN_BJ".
+        const prov = payer.accountDetails.provider;
+        if (typeof prov === 'string' && prov.includes('_') && prov === prov.toUpperCase()) {
+          providerCode = mapProviderToPawaPay(prov);
+        } else {
+          // essayer via active-conf si possible
+          const conf = await fetchActiveConf(country);
+          providerCode = findProviderCodeInConf(conf, String(prov));
+          if (!providerCode) providerCode = mapProviderToPawaPay(String(prov));
         }
-      },
-      clientReferenceId: `INV-${Date.now()}`,
-      customerMessage: 'Transfert Flutter',
-      amount: String(amount),
-      currency: clientCurrency || defaultCurrency,
-      metadata: sanitizeMetadata([
-        { fieldName: 'transfer_type', fieldValue: 'peer_to_peer' },
-        { fieldName: 'fee', fieldValue: String(fee) },
-        { fieldName: 'payoutAmount', fieldValue: String(payoutAmount) }
-      ])
-    };
+      } else if (senderProvider) {
+        const conf = await fetchActiveConf(country);
+        providerCode = findProviderCodeInConf(conf, String(senderProvider)) || mapProviderToPawaPay(String(senderProvider));
+      } else {
+        return res.status(400).json({ error: 'Provider or payer required' });
+      }
 
-    console.log("🔄 Transfert (deposit) envoyé à PawaPay:", JSON.stringify(depositBody, null, 2));
+      // Construire le body Pawapay conforme à la doc
+      const depositBody = {
+        depositId,
+        payer: {
+          type: 'MMO',
+          accountDetails: {
+            phoneNumber: payer?.accountDetails?.phoneNumber || senderPhone,
+            provider: providerCode
+          }
+        },
+        clientReferenceId: `INV-${Date.now()}`,
+        customerMessage: 'Transfert Flutter',
+        amount: String(amount),
+        currency,
+        metadata: sanitizeMetadata([
+          { fieldName: 'transfer_type', fieldValue: 'peer_to_peer' },
+          { fieldName: 'fee', fieldValue: String(fee) },
+          { fieldName: 'payoutAmount', fieldValue: String(payoutAmount) }
+        ])
+      };
 
-    const depRes = await fetch(`${PAWA_BASE}/deposits`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${PAWA_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(depositBody)
-    });
+      console.log("🔄 Transfert (deposit) envoyé à PawaPay:", JSON.stringify(depositBody, null, 2));
 
-    const depData = await depRes.json();
-    console.log("📥 Réponse de dépôt PawaPay:", JSON.stringify(depData, null, 2));
-    const isDepositRequestOk = depRes.ok;
+      const depRes = await fetch(`${PAWA_BASE}/deposits`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${PAWA_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(depositBody)
+      });
+
+      depData = await depRes.json();
+      console.log("📥 Réponse de dépôt PawaPay:", JSON.stringify(depData, null, 2));
+      isDepositRequestOk = depRes.ok;
+      depResStatusCode = depRes.status;
+    }
 
     // stocker la transaction et métadonnées nécessaires
-    transactions.set(depositId, {
+    await transactions.set(depositId, {
       type: 'transfer',
       userId: req.user.id,
-      // Statut réel renvoyé par PawaPay (ACCEPTED en général) ; il sera mis à
-      // jour par le polling ou le callback jusqu'à COMPLETED/FAILED.
+      // Statut réel renvoyé par le prestataire (ACCEPTED en général) ; il
+      // sera mis à jour par le polling ou le callback jusqu'à COMPLETED/FAILED.
       status: String(depData.status || (isDepositRequestOk ? 'ACCEPTED' : 'FAILED')).toUpperCase(),
       deposit: depData,
       meta: {
-        senderPhone: depositBody.payer.accountDetails.phoneNumber,
-        senderProvider: providerCode,
-        senderProviderRaw: payer?.accountDetails?.provider || senderProvider || providerCode,
+        senderPhone: payer?.accountDetails?.phoneNumber || senderPhone,
+        senderProvider: depositRail === 'fedapay' ? senderProviderRawLabel : providerCode,
+        senderProviderRaw: senderProviderRawLabel || providerCode,
+        depositRail,
+        payoutRail,
         receiverPhone,
         // code PawaPay exact si le client l'a fourni, sinon libellé à mapper
         receiverProvider: receiverProviderCode || receiverProvider,
@@ -864,7 +981,7 @@ app.post("/api/transfer", requireAuth, async (req, res) => {
         amount,
         fee,
         payoutAmount,
-        currency: clientCurrency || defaultCurrency,
+        currency,
         backendAccepted: isDepositRequestOk
       },
       payoutInitiated: false,
@@ -875,7 +992,7 @@ app.post("/api/transfer", requireAuth, async (req, res) => {
     if (!isDepositRequestOk) {
       return res.status(502).json({
         error: 'deposit_failed',
-        statusCode: depRes.status,
+        statusCode: depResStatusCode,
         depositId,
         deposit: depData
       });
@@ -884,7 +1001,7 @@ app.post("/api/transfer", requireAuth, async (req, res) => {
     // Si le dépôt est déjà COMPLETED, initier immédiatement le payout
     if (depData.status && (depData.status.toUpperCase() === 'COMPLETED' || depData.status.toUpperCase() === 'SUCCESS')) {
       const payoutResult = await initiatePayoutsForTransfer(depositId);
-      return res.status(200).json({ depositId, status: transactions.get(depositId)?.status, deposit: depData, fee, payoutAmount, payoutResult });
+      return res.status(200).json({ depositId, status: await transactions.get(depositId)?.status, deposit: depData, fee, payoutAmount, payoutResult });
     }
 
     // Sinon : suivi actif du statut côté serveur (le callback reste utilisable
@@ -892,10 +1009,13 @@ app.post("/api/transfer", requireAuth, async (req, res) => {
     startDepositPolling(depositId);
     return res.status(200).json({
       depositId,
-      status: transactions.get(depositId)?.status,
+      status: await transactions.get(depositId)?.status,
       deposit: depData,
       fee,
       payoutAmount,
+      // Remonté au premier niveau pour que l'app n'ait pas à fouiller `deposit`
+      ...(depData.checkoutUrl ? { checkoutUrl: depData.checkoutUrl } : {}),
+      ...(depData.requiresCustomerAction ? { requiresCustomerAction: true } : {}),
       note: 'Deposit initiated; status is tracked server-side (polling + callback). Poll GET /api/transfer-status/:id from the client.'
     });
 
@@ -920,7 +1040,7 @@ app.post("/pawapay/callback", express.json({ verify: (req, res, buf) => { req.ra
 
   const payload = req.body;
   const depositId = payload.depositId || payload.payoutId;
-  const tx = transactions.get(depositId);
+  const tx = await transactions.get(depositId);
 
   if (tx) {
     const oldStatus = tx.status || "";
@@ -934,7 +1054,7 @@ app.post("/pawapay/callback", express.json({ verify: (req, res, buf) => { req.ra
     }
     tx.updatedAt = new Date().toISOString();
     tx.callbackPayload = payload;
-    transactions.set(depositId, tx);
+    await transactions.set(depositId, tx);
     console.log("📦 Callback reçu:", payload);
 
     // Si callback pour un dépôt lié à un transfert et qu'il vient d'être complété, initier le payout
@@ -956,8 +1076,8 @@ app.post("/pawapay/callback", express.json({ verify: (req, res, buf) => { req.ra
 // =======================
 // 5️⃣ Endpoint debug
 // =======================
-app.get("/api/tx/:id", requireAuth, (req, res) => {
-  const tx = transactions.get(req.params.id);
+app.get("/api/tx/:id", requireAuth, async (req, res) => {
+  const tx = await transactions.get(req.params.id);
   if (!tx) return res.status(404).json({ error: "not found" });
   // une transaction rattachée à un utilisateur n'est visible que par lui
   if (tx.userId != null && tx.userId !== req.user.id) {
@@ -974,7 +1094,7 @@ app.get("/api/tx/:id", requireAuth, (req, res) => {
 app.get('/api/transfer-status/:id', requireAuth, async (req, res) => {
   try {
     const id = req.params.id;
-    let tx = transactions.get(id);
+    let tx = await transactions.get(id);
     if (!tx) return res.status(404).json({ error: 'not_found' });
     if (tx.userId != null && tx.userId !== req.user.id) {
       return res.status(403).json({ error: 'forbidden' });
@@ -999,12 +1119,12 @@ app.get('/api/transfer-status/:id', requireAuth, async (req, res) => {
 // =======================
 // 5b️⃣ History endpoint for frontend tab
 // =======================
-app.get('/api/history', requireAuth, (req, res) => {
+app.get('/api/history', requireAuth, async (req, res) => {
   try {
     const rawLimit = Number(req.query.limit || 50);
     const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 200)) : 50;
     // chaque utilisateur ne voit que ses propres transferts
-    const items = buildHistoryItems(limit, req.user.id);
+    const items = await buildHistoryItems(limit, req.user.id);
     res.json({ total: items.length, items });
   } catch (err) {
     console.error('Error /api/history', err);
@@ -1026,7 +1146,7 @@ app.post("/api/simulate-callback", async (req, res) => {
     }
     const { id, status } = req.body;
     if (!id || !status) return res.status(400).json({ error: "id and status required" });
-    const tx = transactions.get(id);
+    const tx = await transactions.get(id);
     if (!tx) return res.status(404).json({ error: "tx not found" });
 
     // Simuler payload et réutiliser la logique de callback
@@ -1035,7 +1155,7 @@ app.post("/api/simulate-callback", async (req, res) => {
     if (tx) {
       tx.status = status;
       tx.callbackPayload = payload;
-      transactions.set(id, tx);
+      await transactions.set(id, tx);
       console.log("[SIM] Callback reçu:", payload);
       // déclencher création de payout si nécessaire
       const statusUp = (status || "").toUpperCase();
@@ -1103,8 +1223,37 @@ app.get('/api/providers', async (req, res) => {
         }
       }
     }
+    // Celtis Bénin n'existe pas chez PawaPay (absent d'active-conf) — routé
+    // vers FedaPay (voir fedapay.js). Ses capacités dépendent des droits
+    // ouverts sur le compte FedaPay, d'où le champ `capabilities` : l'app
+    // s'en sert pour n'autoriser Celtis que là où il fonctionne vraiment.
+    items.push({
+      label: 'CELTIS BJ',
+      code: 'CELTIS_BEN',
+      displayName: 'Celtiis',
+      country: 'BEN',
+      countryCode: 'BJ',
+      prefix: '+229',
+      currency: 'XOF',
+      capabilities: {
+        deposit: fedapay.FEDAPAY_ENABLED,
+        payout: fedapay.fedapayPayoutsAvailable(),
+      },
+      unavailableReason: fedapay.fedapayPayoutsAvailable()
+        ? null
+        : fedapay.fedapayPayoutUnavailableReason(),
+    });
+
+    // Les opérateurs PawaPay savent faire les deux (c'est vérifié par
+    // active-conf en amont) : on l'explicite pour uniformiser le contrat.
+    for (const item of items) {
+      if (!item.capabilities) {
+        item.capabilities = { deposit: true, payout: true };
+      }
+    }
+
     items.sort((a, b) => a.label.localeCompare(b.label));
-    res.json({ total: items.length, source: items.length ? 'pawapay_active_conf' : 'unavailable', providers: items });
+    res.json({ total: items.length, source: items.length ? 'pawapay_active_conf+fedapay' : 'unavailable', providers: items });
   } catch (err) {
     console.error('Error /api/providers', err);
     res.status(500).json({ error: 'providers_failed', details: String(err) });
@@ -1137,6 +1286,18 @@ app.post('/api/predict-provider', async (req, res) => {
     expectedProviderCode = source?.expectedProviderCode;
 
     if (!phoneNumber) return res.status(400).json({ error: 'phoneNumber required' });
+
+    // Celtis Bénin n'est pas dans le réseau PawaPay : leur predict-provider ne
+    // peut structurellement pas le reconnaître et renverrait un faux "mauvais
+    // réseau". On fait confiance au choix de l'utilisateur pour cet opérateur.
+    if (fedapay.isCeltisProvider(expectedProviderCode) || fedapay.isCeltisProvider(expectedProvider)) {
+      console.log(`🔎 Predict provider ignoré pour Celtis (${phoneNumber}) — non couvert par PawaPay`);
+      return res.status(200).json({
+        pawaStatus: 200,
+        predicted: { provider: 'CELTIS_BEN', phoneNumber, note: 'not_covered_by_pawapay' },
+        matches: true,
+      });
+    }
 
     console.log(`🔎 Predict provider for: ${phoneNumber} (expected: ${expectedProviderCode || expectedProvider || 'none'})`);
 
@@ -1348,12 +1509,18 @@ app.use((err, req, res, next) => {
 
 // En mode test (import depuis node --test) on n'ouvre pas de port.
 if (process.env.NODE_ENV !== 'test') {
-  app.listen(PORT, "0.0.0.0", () => {
+  app.listen(PORT, "0.0.0.0", async () => {
     console.log(`✅ Backend PawaPay v2 prêt sur http://0.0.0.0:${PORT}`);
     console.log(`🔑 Token présent: ${!!PAWA_TOKEN} (len=${PAWA_TOKEN.length})`);
     console.log(`🔑 Token (masked): ${PAWA_TOKEN ? PAWA_TOKEN.slice(0,4)+"..."+PAWA_TOKEN.slice(-4) : '<none>'}`);
     console.log(`🌐 Base URL: ${PAWA_BASE}`);
-    console.log(`👤 Utilisateurs enregistrés: ${userQueries.byId ? 'DB prête' : 'DB indisponible'}`);
+    // Le nombre de comptes au démarrage rend immédiatement visible une base
+    // repartie de zéro — le symptôme d'un stockage non persistant.
+    try {
+      console.log(`👤 Comptes enregistrés: ${await users.count()} (pilote: ${dbDriver})`);
+    } catch (err) {
+      console.error('❌ Base de données injoignable au démarrage:', String(err));
+    }
   });
 }
 
