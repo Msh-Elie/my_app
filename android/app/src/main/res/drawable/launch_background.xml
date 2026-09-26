@@ -3,10 +3,14 @@
     <!-- Fond accordé au thème (voir values/colors.xml et values-night/colors.xml) -->
     <item android:drawable="@color/splash_background" />
 
-    <!-- Logo centré -->
+    <!-- Logo centré.
+         Doit pointer vers une image matricielle : depuis le passage à une
+         icône adaptative, @mipmap/ic_launcher est un XML <adaptive-icon> que
+         <bitmap> ne sait pas charger — l'application plantait au lancement
+         sur Android 8.1 (« <bitmap> requires a valid 'src' attribute »). -->
     <item>
         <bitmap
             android:gravity="center"
-            android:src="@mipmap/ic_launcher" />
+            android:src="@drawable/splash_logo" />
     </item>
 </layer-list>
