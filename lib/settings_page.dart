@@ -198,7 +198,7 @@ class _SettingsPageState extends State<SettingsPage> {
               title: 'Centre d\'aide',
               onTap: () => Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const HelpPage()),
+                appRoute(const HelpPage()),
               ),
             ),
           ),

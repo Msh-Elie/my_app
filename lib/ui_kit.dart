@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'theme.dart';
 
@@ -734,4 +735,87 @@ void showSnackOn(
         ),
       ),
     );
+}
+
+/// Transition d'ouverture des ecrans secondaires.
+///
+/// La transition par defaut de Material varie selon la plateforme et donne un
+/// resultat different d'un appareil a l'autre. Celle-ci — glissement court
+/// double d'un fondu — est la meme partout, et s'accorde au rythme des
+/// transitions internes du tunnel de transfert.
+Route<T> appRoute<T>(Widget page) {
+  return PageRouteBuilder<T>(
+    transitionDuration: const Duration(milliseconds: 300),
+    reverseTransitionDuration: const Duration(milliseconds: 220),
+    pageBuilder: (context, animation, secondaryAnimation) => page,
+    transitionsBuilder: (context, animation, secondaryAnimation, child) {
+      final curved = CurvedAnimation(
+        parent: animation,
+        curve: Curves.easeOutCubic,
+        reverseCurve: Curves.easeIn,
+      );
+      return FadeTransition(
+        opacity: curved,
+        child: SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0, 0.035),
+            end: Offset.zero,
+          ).animate(curved),
+          child: child,
+        ),
+      );
+    },
+  );
+}
+
+/// Groupe les chiffres par milliers pendant la frappe.
+///
+/// Un montant est le champ le plus lu de l'ecran : « 25 000 » se verifie d'un
+/// coup d'oeil quand « 25000 » se compte. Le curseur est repositionne en
+/// comptant les chiffres a sa gauche, et non les caracteres : sans cela, il
+/// saute des qu'une espace est inseree ou retiree.
+class ThousandsInputFormatter extends TextInputFormatter {
+  const ThousandsInputFormatter();
+
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    final digits = newValue.text.replaceAll(RegExp(r'[^0-9]'), '');
+    if (digits.isEmpty) {
+      // `TextEditingValue.empty` porte un curseur a -1 : sur un champ encore
+      // actif, cela laisse la saisie sans position valide.
+      return const TextEditingValue(
+        text: '',
+        selection: TextSelection.collapsed(offset: 0),
+      );
+    }
+
+    // Chiffres situes avant le curseur dans la saisie brute.
+    final rawBeforeCursor = newValue.text.substring(0, newValue.selection.end);
+    final digitsBeforeCursor =
+        rawBeforeCursor.replaceAll(RegExp(r'[^0-9]'), '').length;
+
+    final formatted = formatThousands(digits);
+
+    // On avance dans le texte formate jusqu'a avoir croise autant de chiffres.
+    var seen = 0;
+    var offset = formatted.length;
+    for (var i = 0; i < formatted.length; i++) {
+      if (seen == digitsBeforeCursor) {
+        offset = i;
+        break;
+      }
+      if (RegExp(r'[0-9]').hasMatch(formatted[i])) seen++;
+    }
+    if (seen == digitsBeforeCursor && offset == formatted.length) {
+      offset = formatted.length;
+    }
+
+    return TextEditingValue(
+      text: formatted,
+      selection: TextSelection.collapsed(offset: offset),
+    );
+  }
 }

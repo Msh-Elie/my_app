@@ -21,8 +21,15 @@ const _demoHistory = '''[
  {"id":"a1b2c3d4-5e6f-7890-abcd-ef1234567890","from":"MTN BJ","to":"MOOV BJ","amount":"25000 XOF","status":"valide","date":"25/09/2026"},
  {"id":"b2c3d4e5-6f70-8901-bcde-f12345678901","from":"MOOV BJ","to":"CELTIS BJ","amount":"5000 XOF","status":"en_cours","date":"25/09/2026"},
  {"id":"c3d4e5f6-7081-9012-cdef-123456789012","from":"ORANGE CI","to":"WAVE CI","amount":"120000 XOF","status":"echec","date":"24/09/2026"},
- {"id":"d4e5f607-8192-0123-def0-234567890123","from":"AIRTEL KE","to":"SAFARICOM KE","amount":"3500 KES","status":"valide","date":"24/09/2026"},
+ {"id":"d4e5f607-8192-0123-def0-234567890123","from":"AIRTEL KE","to":"SAFARICOM KE","amount":"3500 KES","status":"en_cours","date":"24/09/2026"},
  {"id":"e5f60718-9203-1234-ef01-345678901234","from":"YAS TG","to":"MTN GH","amount":"8000 XOF","status":"valide","date":"20/09/2026"}
+]''';
+
+/// Beneficiaires recents de demonstration, pour l'etape des numeros.
+const _demoRecipients = '''[
+ {"phone":"0166000001","provider":"MOOV BJ","name":"AWA Koffi"},
+ {"phone":"0195000042","provider":"MOOV BJ","name":null},
+ {"phone":"0151469075","provider":"MTN BJ","name":"MENSAH Elie"}
 ]''';
 
 /// Rend chaque écran dans un fichier image, pour inspecter le design sans
@@ -40,6 +47,7 @@ void main() {
     ApiClient.instance.resetForTests();
     SharedPreferences.setMockInitialValues({
       'transfer_history_v1': _demoHistory,
+      'recent_recipients_v1': _demoRecipients,
     });
   });
 
@@ -107,6 +115,12 @@ void main() {
       find.byType(MaterialApp),
       matchesGoldenFile('previews/transfert-montant-clair.png'),
     );
+  });
+
+  testWidgets('transfert-numeros-clair', (tester) async {
+    await _pumpTransferToStep(tester, AppTheme.light(), step: 1);
+    await expectLater(find.byType(MaterialApp),
+        matchesGoldenFile('previews/transfert-numeros-clair.png'));
   });
 
   testWidgets('transfert-confirmation-clair', (tester) async {

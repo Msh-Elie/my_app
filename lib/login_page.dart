@@ -145,10 +145,8 @@ class _LoginPageState extends State<LoginPage> {
                         : () {
                             Navigator.push(
                               context,
-                              MaterialPageRoute(
-                                builder: (_) => RegisterPage(
-                                    onAuthenticated: widget.onAuthenticated),
-                              ),
+                              appRoute(RegisterPage(
+                                  onAuthenticated: widget.onAuthenticated)),
                             );
                           },
                     child: Text.rich(

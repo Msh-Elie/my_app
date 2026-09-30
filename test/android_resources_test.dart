@@ -10,7 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 /// c'est exactement ce qui s'est produit lorsque l'icône de lancement est
 /// devenue adaptative :
 ///
-///   XmlPullParserException: <bitmap> requires a valid 'src' attribute
+///   XmlPullParserException: `<bitmap>` requires a valid `src` attribute
 ///
 /// `@mipmap/ic_launcher` désigne alors `mipmap-anydpi-v26/ic_launcher.xml`,
 /// un `<adaptive-icon>` que la balise `<bitmap>` ne sait pas charger.

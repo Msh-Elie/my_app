@@ -66,7 +66,7 @@ class MenuPage extends StatelessWidget {
             padding: const EdgeInsets.all(AppSpacing.lg),
             onTap: () => Navigator.push(
               context,
-              MaterialPageRoute(builder: (_) => const ProfilePage()),
+              appRoute(const ProfilePage()),
             ),
             child: Row(
               children: [
@@ -106,7 +106,7 @@ class MenuPage extends StatelessWidget {
                   label: 'Profil',
                   onTap: () => Navigator.push(
                     context,
-                    MaterialPageRoute(builder: (_) => const ProfilePage()),
+                    appRoute(const ProfilePage()),
                   ),
                 ),
                 const _MenuDivider(),
@@ -115,7 +115,7 @@ class MenuPage extends StatelessWidget {
                   label: 'Paramètres',
                   onTap: () => Navigator.push(
                     context,
-                    MaterialPageRoute(builder: (_) => const SettingsPage()),
+                    appRoute(const SettingsPage()),
                   ),
                 ),
                 const _MenuDivider(),
@@ -124,7 +124,7 @@ class MenuPage extends StatelessWidget {
                   label: 'Aide',
                   onTap: () => Navigator.push(
                     context,
-                    MaterialPageRoute(builder: (_) => const HelpPage()),
+                    appRoute(const HelpPage()),
                   ),
                 ),
               ],

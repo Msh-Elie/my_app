@@ -8,8 +8,10 @@ import 'api_client.dart';
 import 'history_page.dart';
 import 'history_storage.dart';
 import 'menu_page.dart';
+import 'monthly_summary.dart';
 import 'operator_picker.dart';
 import 'operators.dart';
+import 'recent_recipients.dart';
 import 'theme.dart';
 import 'ui_kit.dart';
 
@@ -420,6 +422,13 @@ late TextEditingController amountController;
 
 int stepIndex = 0;
 
+// Activite du mois, affichee en tete du tunnel. Lue depuis l'historique
+// local : instantane, et disponible meme hors ligne.
+MonthlyStats monthlyStats = MonthlyStats.empty;
+
+// Derniers beneficiaires servis, proposes a l'etape des numeros.
+List<RecentRecipient> recentRecipients = const [];
+
 String? lastOperationStatus;
 String? lastOperationTxId;
 String? lastOperationAmount;
@@ -465,6 +474,20 @@ sendController = TextEditingController();
 receiveController = TextEditingController();
 amountController = TextEditingController();
 
+_loadLocalActivity();
+
+}
+
+/// Recharge le recapitulatif du mois et les beneficiaires recents.
+/// Appelee au demarrage puis apres chaque transfert abouti.
+Future<void> _loadLocalActivity() async {
+  final history = await HistoryStorage.load();
+  final recents = await RecentRecipients.load();
+  if (!mounted) return;
+  setState(() {
+    monthlyStats = computeMonthlyStats(history);
+    recentRecipients = recents;
+  });
 }
 
 @override
@@ -495,7 +518,12 @@ double computeFee(double amount) {
   return 5000;
 }
 
-double get enteredAmount => double.tryParse(amountController.text.trim()) ?? 0;
+/// Montant saisi, separateurs de milliers retires.
+///
+/// Le champ affiche « 25 000 » : le lire tel quel donnerait 0, car
+/// `double.tryParse` ne sait pas quoi faire d'une espace fine insecable.
+double get enteredAmount =>
+    double.tryParse(digitsOnly(amountController.text)) ?? 0;
 
 double get transferFee => computeFee(enteredAmount);
 
@@ -901,9 +929,7 @@ Widget _buildHeader() {
           onTap: () {
             Navigator.push(
               context,
-              MaterialPageRoute(
-                builder: (context) => MenuPage(onLoggedOut: widget.onLoggedOut),
-              ),
+              appRoute(MenuPage(onLoggedOut: widget.onLoggedOut)),
             ).then((_) {
               if (mounted) setState(() {});
             });
@@ -962,6 +988,7 @@ Widget _buildTabItem(String title, int index) {
     child: GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: () {
+        HapticFeedback.selectionClick();
         setState(() {
           selectedTab = index;
           tabController.animateTo(index);
@@ -994,6 +1021,28 @@ Widget _buildTransferTab() {
 
   return Column(
     children: [
+      // Recapitulatif du mois : visible seulement au repos (etape 0). Des
+      // qu'un transfert commence, il s'efface pour ne pas concurrencer
+      // l'etape a remplir.
+      if (stepIndex == 0 && !monthlyStats.isEmpty)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg,
+            AppSpacing.lg,
+            AppSpacing.lg,
+            AppSpacing.sm,
+          ),
+          child: MonthlySummaryCard(
+            stats: monthlyStats,
+            onTap: () {
+              HapticFeedback.selectionClick();
+              setState(() {
+                selectedTab = 1;
+                tabController.animateTo(1);
+              });
+            },
+          ),
+        ),
       if (showFlowChrome)
         Padding(
           padding: const EdgeInsets.fromLTRB(
@@ -1067,6 +1116,7 @@ Widget _buildTransferTab() {
 
 void _goToPreviousStep() {
   if (stepIndex <= 0) return;
+  HapticFeedback.selectionClick();
   setState(() => stepIndex = stepIndex - 1);
 }
 
@@ -1209,6 +1259,7 @@ Widget _buildOperatorStep() {
 /// resteraient faux s'ils restaient en place, et la recherche d'identité du
 /// bénéficiaire doit être relancée.
 void _swapOperators() {
+  HapticFeedback.mediumImpact();
   setState(() {
     final from = selectedFrom;
     selectedFrom = selectedTo;
@@ -1316,8 +1367,129 @@ Widget _buildNumbersStep() {
             _scheduleRecipientLookup();
           },
         ),
+        _buildRecentRecipients(),
       ],
     ),
+  );
+}
+
+/// Montants proposes d'un geste sous le champ de saisie.
+///
+/// Les transferts se concentrent sur quelques valeurs rondes ; les proposer
+/// evite de composer dix chiffres au pouce pour le cas courant.
+Widget _buildQuickAmounts() {
+  const suggestions = [1000, 2000, 5000, 10000, 25000, 50000];
+  final c = context.colors;
+  final current = enteredAmount;
+
+  return SizedBox(
+    height: 38,
+    child: ListView.separated(
+      scrollDirection: Axis.horizontal,
+      itemCount: suggestions.length,
+      separatorBuilder: (_, __) => const SizedBox(width: AppSpacing.sm),
+      itemBuilder: (context, index) {
+        final amount = suggestions[index];
+        final active = current == amount;
+        return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {
+              HapticFeedback.selectionClick();
+              amountController.text = formatThousands(amount.toString());
+              amountController.selection = TextSelection.collapsed(
+                offset: amountController.text.length,
+              );
+              setState(() {});
+            },
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOut,
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.md,
+                vertical: AppSpacing.sm,
+              ),
+              decoration: BoxDecoration(
+                color: active ? c.brandSurface : c.surface,
+                borderRadius: BorderRadius.circular(AppRadius.pill),
+                border: Border.all(color: active ? c.brandBorder : c.border),
+              ),
+              child: Text(
+                formatThousands(amount.toString()),
+                style: context.text.labelMedium?.copyWith(
+                  color: active ? c.brandText : c.textSecondary,
+                  fontFeatures: kTabularFigures,
+                ),
+              ),
+            ),
+          );
+      },
+    ),
+  );
+}
+
+/// Beneficiaires deja servis sur l'operateur de destination.
+Widget _buildRecentRecipients() {
+  final matches =
+      RecentRecipients.forProvider(recentRecipients, selectedTo);
+  if (matches.isEmpty) return const SizedBox.shrink();
+
+  final c = context.colors;
+
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const SizedBox(height: AppSpacing.lg),
+      Text('RECENTS', style: context.text.labelSmall),
+      const SizedBox(height: AppSpacing.sm),
+      SizedBox(
+        height: 40,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          itemCount: matches.length,
+          separatorBuilder: (_, __) => const SizedBox(width: AppSpacing.sm),
+          itemBuilder: (context, index) {
+            final recipient = matches[index];
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () {
+                HapticFeedback.selectionClick();
+                receiveController.text = recipient.phone;
+                receiveController.selection = TextSelection.collapsed(
+                  offset: recipient.phone.length,
+                );
+                setState(() {});
+                _scheduleRecipientLookup();
+              },
+              child: Container(
+                padding: const EdgeInsets.only(
+                  left: 5,
+                  right: AppSpacing.md,
+                ),
+                decoration: BoxDecoration(
+                  color: c.surface,
+                  borderRadius: BorderRadius.circular(AppRadius.pill),
+                  border: Border.all(color: c.border),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    OperatorAvatar(label: recipient.provider, size: 30),
+                    const SizedBox(width: AppSpacing.sm),
+                    Text(
+                      recipient.display,
+                      style: context.text.labelMedium?.copyWith(
+                        color: c.textPrimary,
+                        fontFeatures: kTabularFigures,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    ],
   );
 }
 
@@ -1346,9 +1518,9 @@ Widget _buildAmountStep() {
         AppCard(
           padding: const EdgeInsets.fromLTRB(
             AppSpacing.lg,
-            AppSpacing.xl,
             AppSpacing.lg,
-            AppSpacing.xl,
+            AppSpacing.lg,
+            AppSpacing.lg,
           ),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.center,
@@ -1357,7 +1529,7 @@ Widget _buildAmountStep() {
                 child: TextField(
                   controller: amountController,
                   keyboardType: TextInputType.number,
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  inputFormatters: const [ThousandsInputFormatter()],
                   textAlign: TextAlign.center,
                   autofocus: true,
                   cursorColor: c.brand,
@@ -1392,6 +1564,8 @@ Widget _buildAmountStep() {
           ),
         ),
 
+        const SizedBox(height: AppSpacing.md),
+        _buildQuickAmounts(),
         const SizedBox(height: AppSpacing.md),
 
         // Décomposition des frais : visible avant la confirmation, pas après.
@@ -1460,13 +1634,13 @@ Widget _buildConfirmationStep() {
         // de valider un envoi d'argent.
         AppCard(
           highlighted: true,
-          padding: const EdgeInsets.all(AppSpacing.xl),
+          padding: const EdgeInsets.all(AppSpacing.lg),
           child: Column(
             children: [
               // Les deux opérateurs concernés, pour que le trajet soit
               // reconnaissable d'un coup d'œil au moment de valider.
-              OperatorPair(from: selectedFrom, to: selectedTo, size: 52),
-              const SizedBox(height: AppSpacing.lg),
+              OperatorPair(from: selectedFrom, to: selectedTo, size: 44),
+              const SizedBox(height: AppSpacing.md),
               Text(
                 resolvedRecipientDisplayName,
                 textAlign: TextAlign.center,
@@ -1491,7 +1665,7 @@ Widget _buildConfirmationStep() {
                     : Icons.help_outline_rounded,
               ),
               Padding(
-                padding: const EdgeInsets.symmetric(vertical: AppSpacing.lg),
+                padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
                 child: Divider(height: 1, color: c.border),
               ),
               DetailRow(label: 'Réseau', value: selectedTo),
@@ -1823,13 +1997,14 @@ if (stepIndex == 2) {
 // Passage à l'étape suivante : l'indicateur de progression rend compte
 // du changement, une notification en bas d'écran ferait doublon.
 if (stepIndex == 0) _rememberOperatorSelection();
+HapticFeedback.lightImpact();
 setStepIndex(stepIndex + 1);
 return;
 }
 
 // Dernière étape -> lancer transfert complet via le service
 _setProgress('Validation des champs…');
-final amountText = amountController.text.trim();
+final amountText = digitsOnly(amountController.text);
 if (amountText.isEmpty) {
   _setProgress('');
   return;
@@ -2021,6 +2196,16 @@ if (response.statusCode == 200) {
       date: HistoryStorage.formatDisplayDate(DateTime.now()),
     ),
   );
+  // Le beneficiaire est memorise des que le depot est accepte : on le
+  // reproposera d'un geste au prochain transfert. Rien ne quitte l'appareil.
+  await RecentRecipients.remember(
+    RecentRecipient(
+      phone: digitsOnly(receiveController.text),
+      provider: selectedTo,
+      name: recipientNameResolved ? resolvedRecipientName : null,
+    ),
+  );
+  unawaited(_loadLocalActivity());
   final checkoutUrl = data['checkoutUrl']?.toString();
   _captureOperationResult(
     status: uiStatus,
@@ -2035,6 +2220,9 @@ if (response.statusCode == 200) {
             ? 'Le transfert a été validé avec succès.'
             : 'Dépôt initié — confirmation de l\'opérateur en cours…',
   );
+  // Le depot est parti : une vibration plus franche marque la fin du
+  // tunnel, la ou les etapes intermediaires restent discretes.
+  HapticFeedback.heavyImpact();
   setStepIndex(4);
   success = true;
   _setProgress('');
