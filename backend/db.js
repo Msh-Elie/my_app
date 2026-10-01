@@ -27,13 +27,28 @@ let sqlite = null; // better-sqlite3
 
 if (driver === 'postgres') {
   const { default: pg } = await import('pg');
+  const isLocalDb = /\blocalhost\b|\b127\.0\.0\.1\b/.test(DATABASE_URL);
+
+  // Échappatoire pour un hébergeur dont la chaîne de certification ne serait
+  // pas dans le magasin de Node. Désactiver la vérification revient à
+  // accepter n'importe quel certificat : on ne le fait que sur demande.
+  const skipTlsVerify =
+    String(process.env.DATABASE_SSL_NO_VERIFY || '').toLowerCase() === 'true';
+  if (skipTlsVerify) {
+    console.warn(
+      '⚠️  DATABASE_SSL_NO_VERIFY=true : le certificat du serveur de base de '
+      + 'données n\'est pas vérifié. À ne pas laisser en production.'
+    );
+  }
+
   pool = new pg.Pool({
     connectionString: DATABASE_URL,
-    // Les bases gérées (Neon, Supabase, Render) imposent TLS ; leur chaîne de
-    // certification n'est pas toujours dans le magasin de l'image Node.
-    ssl: /\blocalhost\b|\b127\.0\.0\.1\b/.test(DATABASE_URL)
-      ? false
-      : { rejectUnauthorized: false },
+    // Les bases gérées (Neon, Supabase, Render) imposent TLS, avec un
+    // certificat émis par une autorité publique — donc présente dans le
+    // magasin de Node. La vérification complète fonctionne et doit rester
+    // active : sans elle, un intermédiaire pourrait se faire passer pour la
+    // base de données.
+    ssl: isLocalDb ? false : { rejectUnauthorized: !skipTlsVerify },
     max: 5,
   });
   console.log('🗄️  Persistance : PostgreSQL (les données survivent aux redémarrages)');

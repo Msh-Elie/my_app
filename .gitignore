@@ -60,3 +60,5 @@ backend/switchmoney.db-wal
 backend/recipients.db
 backend/recipients.db-shm
 backend/recipients.db-wal
+.neon
+.env.local

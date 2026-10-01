@@ -17,6 +17,12 @@ services:
       #   postgresql://utilisateur:motdepasse@hote/base?sslmode=require
       - key: DATABASE_URL
         sync: false
+      # Laisser non defini. Ne passer a "true" que si l'hebergeur de la base
+      # presente un certificat qu'une autorite publique n'a pas emis : cela
+      # desactive la verification TLS, donc la garantie que l'on parle bien a
+      # la bonne base. Neon n'en a pas besoin (verifie le 01/10/2026).
+      - key: DATABASE_SSL_NO_VERIFY
+        sync: false
       - key: PAWA_TOKEN
         sync: false
       - key: PAWA_BASE
