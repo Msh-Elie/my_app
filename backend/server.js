@@ -1331,8 +1331,9 @@ app.get('/api/providers', async (req, res) => {
     // `capabilities` dit a l'application ce qui marche vraiment, dans chaque
     // sens, plutot que de la laisser echouer en fin de parcours.
     const celtisRail = resolveRail('CELTIS BJ');
-    const celtisCanDeposit =
-      celtisRail === 'paydunya' ? paydunya.PAYDUNYA_ENABLED : fedapay.FEDAPAY_ENABLED;
+    const celtisCanDeposit = celtisRail === 'paydunya'
+      ? paydunya.paydunyaDepositsAvailable()
+      : fedapay.FEDAPAY_ENABLED;
     const celtisCanPayout = railCanPayout(celtisRail);
 
     items.push({

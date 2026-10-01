@@ -3,8 +3,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-process.env.PAYDUNYA_MASTER_KEY = 'test-master';
-process.env.PAYDUNYA_PRIVATE_KEY = 'test-private';
+process.env.PAYDUNYA_MASTER_KEY = 'AAAA-BBBB-CCCC-DDDD-EEEE';
+process.env.PAYDUNYA_PRIVATE_KEY = 'test_private_AAAAAAAAAAAAAAAAAAAAAAA';
 process.env.PAYDUNYA_TOKEN = 'test-token';
 
 const paydunya = await import('../paydunya.js');
@@ -88,10 +88,12 @@ describe('normalisation des statuts de facture', () => {
 });
 
 describe('disponibilité du rail', () => {
-  test('les clés présentes suffisent à décaisser', () => {
-    // Contrairement à FedaPay, aucun droit supplémentaire n'est à obtenir.
+  test('des clés de test ne suffisent pas à décaisser', () => {
+    // Supposition initiale démentie par l'API : /v2/disburse refuse les clés
+    // « test_ » quel que soit l'en-tête de mode, avec « LIVE Private Key and
+    // Token combination is invalid ». Seule la collecte a un bac à sable.
     assert.equal(paydunya.PAYDUNYA_ENABLED, true);
-    assert.equal(paydunya.paydunyaPayoutsAvailable(), true);
+    assert.equal(paydunya.paydunyaPayoutsAvailable(), false);
   });
 
   test('un opérateur non couvert est refusé avant tout appel réseau', async () => {
@@ -103,5 +105,33 @@ describe('disponibilité du rail', () => {
       }),
       /non couvert par PayDunya/,
     );
+  });
+});
+
+describe('disponibilité réelle du décaissement', () => {
+  test('des clés de test ne permettent pas de décaisser', () => {
+    // L'API /v2/disburse refuse les clés « test_ » quel que soit l'en-tête de
+    // mode. Annoncer le décaissement disponible ferait débiter un expéditeur
+    // pour un transfert que personne ne peut livrer.
+    assert.equal(paydunya.paydunyaPayoutsAvailable(), false);
+    assert.match(paydunya.paydunyaUnavailableReason(), /clés de production/);
+  });
+
+  test('la collecte reste annoncée tant qu’aucun refus n’a été constaté', () => {
+    assert.equal(paydunya.paydunyaDepositsAvailable(), true);
+  });
+});
+
+describe('clés de production', () => {
+  test('des clés live rendent le décaissement disponible', async () => {
+    process.env.PAYDUNYA_PRIVATE_KEY = 'live_private_BBBBBBBBBBBBBBBBBBBBBBB';
+    // Suffixe de requête : force une nouvelle évaluation du module, que
+    // l'import ESM mettrait sinon en cache avec l'ancien environnement.
+    const live = await import('../paydunya.js?keys=live');
+
+    assert.equal(live.paydunyaPayoutsAvailable(), true);
+    assert.equal(live.paydunyaDepositsAvailable(), true);
+
+    process.env.PAYDUNYA_PRIVATE_KEY = 'test_private_AAAAAAAAAAAAAAAAAAAAAAA';
   });
 });

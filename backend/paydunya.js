@@ -100,13 +100,31 @@ async function call(path, { method = 'POST', body } = {}) {
     headers: headers(),
     body: body ? JSON.stringify(body) : undefined,
   });
-  const data = await r.json().catch(() => null);
+
+  // PayDunya renvoie une page HTML sur erreur serveur : tenter de la lire
+  // comme du JSON donnait un message vide, illisible dans les journaux.
+  const text = await r.text();
+  let data = null;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = null;
+  }
+
   if (!r.ok) {
-    const detail = data?.response_text || data?.message || JSON.stringify(data);
+    const detail = data?.response_text
+      || data?.message
+      || (text.trimStart().startsWith('<')
+        ? 'réponse HTML (erreur côté PayDunya)'
+        : text.slice(0, 200));
     const err = new Error('PayDunya ' + path + ' -> HTTP ' + r.status + ': ' + detail);
     err.status = r.status;
-    err.payload = data;
+    err.payload = data ?? text.slice(0, 500);
     throw err;
+  }
+
+  if (data === null) {
+    throw new Error('PayDunya ' + path + ' : réponse illisible (' + text.slice(0, 120) + ')');
   }
   return data;
 }
@@ -137,18 +155,29 @@ export async function paydunyaInitiateDeposit({
 }) {
   if (!PAYDUNYA_ENABLED) throw new Error('Clés PayDunya non configurées');
 
-  const invoice = assertAccepted(
-    await call('/v1/checkout-invoice/create', {
-      body: {
-        invoice: {
-          total_amount: Math.round(Number(amount)),
-          description: description || 'Transfert SwitchMoney',
+  let invoice;
+  try {
+    invoice = assertAccepted(
+      await call('/v1/checkout-invoice/create', {
+        body: {
+          invoice: {
+            total_amount: Math.round(Number(amount)),
+            description: description || 'Transfert SwitchMoney',
+          },
+          store: { name: 'SwitchMoney' },
         },
-        store: { name: 'SwitchMoney' },
-      },
-    }),
-    '/v1/checkout-invoice/create',
-  );
+      }),
+      '/v1/checkout-invoice/create',
+    );
+  } catch (err) {
+    // Compte non valide : inutile de reessayer a chaque transfert, et surtout
+    // il faut cesser d'annoncer ce rail comme disponible.
+    if (isAccountRefusal(err)) {
+      depositsRefusedAtRuntime = true;
+      console.error('PayDunya refuse la collecte :', err.message);
+    }
+    throw err;
+  }
 
   const token = invoice?.token;
   if (!token) {
@@ -197,17 +226,26 @@ export async function paydunyaInitiatePayout({
     throw new Error('Opérateur non couvert par PayDunya : ' + provider);
   }
 
-  const invoice = assertAccepted(
-    await call('/v2/disburse/get-invoice', {
-      body: {
-        account_alias: toLocalNumber(phoneNumber),
-        amount: Math.round(Number(amount)),
-        withdraw_mode: withdrawMode,
-        callback_url: callbackUrl || (process.env.BACKEND_BASE || '') + '/paydunya/callback',
-      },
-    }),
-    '/v2/disburse/get-invoice',
-  );
+  let invoice;
+  try {
+    invoice = assertAccepted(
+      await call('/v2/disburse/get-invoice', {
+        body: {
+          account_alias: toLocalNumber(phoneNumber),
+          amount: Math.round(Number(amount)),
+          withdraw_mode: withdrawMode,
+          callback_url: callbackUrl || (process.env.BACKEND_BASE || '') + '/paydunya/callback',
+        },
+      }),
+      '/v2/disburse/get-invoice',
+    );
+  } catch (err) {
+    if (isAccountRefusal(err)) {
+      payoutsRefusedAtRuntime = true;
+      console.error('PayDunya refuse le decaissement :', err.message);
+    }
+    throw err;
+  }
 
   const disburseInvoice = invoice?.disburse_token || invoice?.token;
   if (!disburseInvoice) {
@@ -242,12 +280,49 @@ export async function paydunyaCheckPayoutStatus(disburseInvoice) {
   return { status: normalizeDisburseStatus(data?.status), raw: data };
 }
 
-/// PayDunya peut-il décaisser ? Contrairement à FedaPay, aucun droit
-/// supplémentaire n'est à faire ouvrir : les clés suffisent.
+/// Les clés de test portent le préfixe `test_` ; les clés de production, non.
+///
+/// Distinction décisive : l'API de déboursement (/v2/disburse) refuse les clés
+/// de test quel que soit l'en-tête `PAYDUNYA-MODE` — « LIVE Private Key and
+/// Token combination is invalid ». Il n'existe pas de bac à sable pour le
+/// décaissement, contrairement à la collecte.
+const USING_TEST_KEYS = /^test_/i.test(PRIVATE_KEY);
+
+/// Refus constaté à l'exécution (KYC non validé, droits manquants…). Mémorisé
+/// pour ne plus proposer un rail qui vient de refuser : sans cela, un
+/// expéditeur serait débité d'un transfert que personne ne peut livrer.
+let payoutsRefusedAtRuntime = false;
+let depositsRefusedAtRuntime = false;
+
+/// PayDunya renvoie ses refus applicatifs sous HTTP 200, code 1001.
+function isAccountRefusal(err) {
+  const message = String(err?.message || '');
+  return /code 1001/.test(message)
+    || /KYC/i.test(message)
+    || /Private Key and Token combination is invalid/i.test(message);
+}
+
+/// PayDunya peut-il décaisser maintenant ?
 export function paydunyaPayoutsAvailable() {
-  return PAYDUNYA_ENABLED;
+  return PAYDUNYA_ENABLED && !USING_TEST_KEYS && !payoutsRefusedAtRuntime;
+}
+
+/// PayDunya peut-il encaisser maintenant ?
+export function paydunyaDepositsAvailable() {
+  return PAYDUNYA_ENABLED && !depositsRefusedAtRuntime;
 }
 
 export function paydunyaUnavailableReason() {
-  return 'Clés PayDunya non configurées (PAYDUNYA_MASTER_KEY, PAYDUNYA_PRIVATE_KEY, PAYDUNYA_TOKEN).';
+  if (!PAYDUNYA_ENABLED) {
+    return 'Clés PayDunya non configurées (PAYDUNYA_MASTER_KEY, PAYDUNYA_PRIVATE_KEY, PAYDUNYA_TOKEN).';
+  }
+  if (USING_TEST_KEYS) {
+    return "Le décaissement PayDunya n'accepte que des clés de production : "
+      + "l'API /v2/disburse refuse les clés « test_ » même en mode test. "
+      + 'Validez le compte (KYC) pour obtenir les clés live.';
+  }
+  if (payoutsRefusedAtRuntime) {
+    return 'PayDunya a refusé un décaissement (compte non validé ou droits manquants).';
+  }
+  return 'PayDunya indisponible.';
 }
