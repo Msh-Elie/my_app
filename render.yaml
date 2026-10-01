@@ -37,6 +37,19 @@ services:
         value: "false"
       - key: VERIFY_CALLBACK_SIGNATURE
         value: "false"
+      # PayDunya — rail couvrant Celtis Benin, dans les deux sens, sans droit
+      # supplementaire a faire ouvrir : les cles suffisent. Des qu'elles sont
+      # posees, Celtis passe par PayDunya plutot que par FedaPay.
+      # Cles a recuperer dans le tableau de bord PayDunya, menu Integration.
+      - key: PAYDUNYA_MASTER_KEY
+        sync: false
+      - key: PAYDUNYA_PRIVATE_KEY
+        sync: false
+      - key: PAYDUNYA_TOKEN
+        sync: false
+      # "test" tant que le compte n'est pas valide, "live" ensuite.
+      - key: PAYDUNYA_MODE
+        value: "test"
       # FedaPay — rail secondaire, seul à couvrir Celtis Bénin (absent de
       # PawaPay). Sans FEDAPAY_SECRET_KEY, Celtis est annoncé comme
       # indisponible à l'envoi comme à la réception.

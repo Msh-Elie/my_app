@@ -8,17 +8,29 @@ import dotenv from "dotenv";
 import crypto from "crypto";
 import { v4 as uuidv4 } from "uuid";
 import path from "path";
+import { fileURLToPath } from "url";
 
-// attempt to load .env from the same directory as this script (needs to work whether
-// `node server.js` is run from the backend folder or from the repo root).
-const __dirname = path.dirname(new URL(import.meta.url).pathname);
-// Windows paths from URL may start with a slash, strip it if necessary
-const normalizedDir = __dirname.replace(/^\//, "");
-const envPath = path.resolve(normalizedDir, ".env");
-console.log(`📁 Loading environment from: ${envPath}`);
+// Charge le .env situé à côté de ce fichier, que `node server.js` soit lancé
+// depuis backend/ ou depuis la racine du dépôt.
+//
+// `fileURLToPath` est indispensable ici : construire le chemin en retirant le
+// slash initial de l'URL (rustine Windows) transformait sous Linux un chemin
+// absolu en chemin relatif, que `path.resolve` recollait ensuite au répertoire
+// courant — d'où un chemin dupliqué et une erreur au démarrage sur Render.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const envPath = path.resolve(__dirname, ".env");
 const result = dotenv.config({ path: envPath });
+
 if (result.error) {
-  console.warn("⚠️ .env file could not be loaded", result.error);
+  // En production les variables viennent de la plateforme (Render, Docker…) :
+  // l'absence de fichier .env y est normale et ne mérite pas une trace.
+  if (result.error.code === "ENOENT") {
+    console.log(`📁 Pas de fichier .env (${envPath}) — variables lues depuis l'environnement.`);
+  } else {
+    console.warn("⚠️ .env illisible", result.error);
+  }
+} else {
+  console.log(`📁 Environnement chargé depuis ${envPath}`);
 }
 
 // db.js et auth.js lisent process.env : l'import dynamique après dotenv.config
@@ -31,12 +43,38 @@ const { lookupRecipientSync } = await import("./recipient_lookup.js");
 // Rail de paiement secondaire, utilisé uniquement pour Celtis Bénin (PawaPay
 // ne l'intègre pas du tout) — voir backend/fedapay.js
 const fedapay = await import("./fedapay.js");
+// Rail couvrant Celtis sans droit supplementaire a obtenir — voir backend/paydunya.js
+const paydunya = await import("./paydunya.js");
 
-// Détermine quel prestataire traite un opérateur donné. Extensible : ajouter
-// une entrée ici (et dans fedapay.isCeltisProvider ou un module équivalent)
-// suffit pour router un nouvel opérateur non couvert par PawaPay.
+// Détermine quel prestataire traite un opérateur donné.
+//
+// Celtis Bénin n'existe pas chez PawaPay. Deux rails peuvent le servir :
+//   • PayDunya — collecte et décaissement documentés pour « celtiis-cash »,
+//     disponibles dès que les clés sont posées ;
+//   • FedaPay  — mode « sbin » correct, mais le compte doit se voir ouvrir les
+//     droits de charge directe et de payout (refusés en 400 / 403).
+//
+// PayDunya passe donc en premier dès qu'il est configuré : c'est le seul des
+// deux qui ne dépende pas d'une autorisation à obtenir.
 function resolveRail(providerLabel) {
-  return fedapay.isCeltisProvider(providerLabel) ? 'fedapay' : 'pawapay';
+  if (paydunya.PAYDUNYA_ENABLED && paydunya.supportsProvider(providerLabel)) {
+    return 'paydunya';
+  }
+  if (fedapay.isCeltisProvider(providerLabel)) return 'fedapay';
+  return 'pawapay';
+}
+
+/// Le rail sait-il décaisser vers cet opérateur ?
+function railCanPayout(rail) {
+  if (rail === 'paydunya') return paydunya.paydunyaPayoutsAvailable();
+  if (rail === 'fedapay') return fedapay.fedapayPayoutsAvailable();
+  return true; // PawaPay : capacité vérifiée en amont par active-conf
+}
+
+/// Pourquoi ce rail ne peut pas décaisser, en clair pour l'utilisateur.
+function railPayoutUnavailableReason(rail) {
+  if (rail === 'paydunya') return paydunya.paydunyaUnavailableReason();
+  return fedapay.fedapayPayoutUnavailableReason();
 }
 
 const app = express();
@@ -500,6 +538,37 @@ async function createPayoutForTransfer(txId, payoutAmount, receiverPhone, receiv
       ? 'Payout Pawapay'
       : 'Payout transfer';
 
+  if (rail === 'paydunya') {
+    console.log(`Creation payout PayDunya (${purpose}) pour transfer ${txId}`);
+    try {
+      const result = await paydunya.paydunyaInitiatePayout({
+        amount: payoutAmount,
+        phoneNumber: receiverPhone,
+        provider: receiverProvider,
+        merchantReference: `SM-${txId}-${purpose}`,
+      });
+      console.log('Reponse Payout PayDunya:', JSON.stringify(result.raw, null, 2));
+
+      const tx = await transactions.get(txId) || {};
+      tx.payoutInitiated = true;
+      tx.payout = result.raw;
+      tx.payoutId = payoutId;
+      tx.payoutProviderId = result.providerPayoutId;
+      tx.payoutRail = 'paydunya';
+      tx.payoutStatus = result.status;
+      await transactions.set(txId, tx);
+
+      return { payoutId, pawaResponse: result.raw, status: 200 };
+    } catch (err) {
+      console.error('Erreur createPayoutForTransfer (paydunya)', err);
+      const tx = await transactions.get(txId) || {};
+      tx.payoutInitiated = false;
+      tx.payoutError = String(err);
+      await transactions.set(txId, tx);
+      return { error: String(err) };
+    }
+  }
+
   if (rail === 'fedapay') {
     console.log(`📤 Création payout FedaPay (${purpose}) pour transfer ${txId}`);
     try {
@@ -629,6 +698,17 @@ async function initiatePayoutsForTransfer(txId) {
 // prestataire — c'est ce qui permet à refreshTransferStatus de rester
 // agnostique du rail (PawaPay ou FedaPay).
 async function fetchDepositStatus(depositId, tx) {
+  if (tx?.meta?.depositRail === 'paydunya') {
+    const token = tx.deposit?.providerTransactionId;
+    if (!token) return null;
+    try {
+      return await paydunya.paydunyaCheckDepositStatus(token);
+    } catch (err) {
+      console.error('Erreur fetchDepositStatus (paydunya)', depositId, String(err));
+      return null;
+    }
+  }
+
   if (tx?.meta?.depositRail === 'fedapay') {
     const providerTransactionId = tx.deposit?.providerTransactionId;
     if (!providerTransactionId) return null;
@@ -860,14 +940,14 @@ app.post("/api/transfer", requireAuth, async (req, res) => {
     // ne sait pas décaisser. Sans ce contrôle, un transfert vers Celtis
     // réussit le dépôt puis échoue au payout (FedaPay 403) : l'argent est
     // prélevé sans jamais être livré. On refuse donc en amont.
-    if (payoutRail === 'fedapay' && !fedapay.fedapayPayoutsAvailable()) {
+    if (payoutRail !== 'pawapay' && !railCanPayout(payoutRail)) {
       console.warn(`⛔ Transfert refusé : destination ${receiverProviderRawLabel} non décaissable.`);
       return res.status(503).json({
         error: 'payout_rail_unavailable',
         provider: receiverProviderRawLabel,
         message: `${receiverProviderRawLabel} ne peut pas encore recevoir de transfert. `
           + 'Aucun montant n\'a été prélevé.',
-        details: fedapay.fedapayPayoutUnavailableReason(),
+        details: railPayoutUnavailableReason(payoutRail),
       });
     }
 
@@ -876,7 +956,29 @@ app.post("/api/transfer", requireAuth, async (req, res) => {
     let isDepositRequestOk;
     let depResStatusCode = 502; // code HTTP renvoyé au client en cas d'échec
 
-    if (depositRail === 'fedapay') {
+    if (depositRail === 'paydunya') {
+      console.log(`Transfert (deposit) route vers PayDunya (expediteur: ${senderProviderRawLabel})`);
+      try {
+        const result = await paydunya.paydunyaInitiateDeposit({
+          amount,
+          phoneNumber: payer?.accountDetails?.phoneNumber || senderPhone,
+          description: `Transfert ${senderProviderRawLabel} -> ${receiverProviderRawLabel}`,
+        });
+        depData = {
+          status: result.status,
+          currency,
+          provider: 'paydunya',
+          providerTransactionId: result.providerTransactionId,
+          requiresCustomerAction: result.requiresCustomerAction === true,
+          raw: result.raw,
+        };
+        isDepositRequestOk = result.status !== 'FAILED';
+      } catch (err) {
+        console.error('Erreur depot PayDunya', err);
+        depData = { status: 'FAILED', error: String(err) };
+        isDepositRequestOk = false;
+      }
+    } else if (depositRail === 'fedapay') {
       console.log(`🔄 Transfert (deposit) routé vers FedaPay (expéditeur: ${senderProviderRawLabel})`);
       try {
         const result = await fedapay.fedapayInitiateDeposit({
@@ -970,7 +1072,7 @@ app.post("/api/transfer", requireAuth, async (req, res) => {
       deposit: depData,
       meta: {
         senderPhone: payer?.accountDetails?.phoneNumber || senderPhone,
-        senderProvider: depositRail === 'fedapay' ? senderProviderRawLabel : providerCode,
+        senderProvider: depositRail === 'pawapay' ? providerCode : senderProviderRawLabel,
         senderProviderRaw: senderProviderRawLabel || providerCode,
         depositRail,
         payoutRail,
@@ -1223,10 +1325,16 @@ app.get('/api/providers', async (req, res) => {
         }
       }
     }
-    // Celtis Bénin n'existe pas chez PawaPay (absent d'active-conf) — routé
-    // vers FedaPay (voir fedapay.js). Ses capacités dépendent des droits
-    // ouverts sur le compte FedaPay, d'où le champ `capabilities` : l'app
-    // s'en sert pour n'autoriser Celtis que là où il fonctionne vraiment.
+    // Celtis Benin n'existe pas chez PawaPay (absent d'active-conf). Il est
+    // servi par PayDunya si ses cles sont posees, sinon par FedaPay — dont le
+    // compte doit encore se voir ouvrir les droits correspondants. Le champ
+    // `capabilities` dit a l'application ce qui marche vraiment, dans chaque
+    // sens, plutot que de la laisser echouer en fin de parcours.
+    const celtisRail = resolveRail('CELTIS BJ');
+    const celtisCanDeposit =
+      celtisRail === 'paydunya' ? paydunya.PAYDUNYA_ENABLED : fedapay.FEDAPAY_ENABLED;
+    const celtisCanPayout = railCanPayout(celtisRail);
+
     items.push({
       label: 'CELTIS BJ',
       code: 'CELTIS_BEN',
@@ -1235,13 +1343,12 @@ app.get('/api/providers', async (req, res) => {
       countryCode: 'BJ',
       prefix: '+229',
       currency: 'XOF',
+      rail: celtisRail,
       capabilities: {
-        deposit: fedapay.FEDAPAY_ENABLED,
-        payout: fedapay.fedapayPayoutsAvailable(),
+        deposit: celtisCanDeposit,
+        payout: celtisCanPayout,
       },
-      unavailableReason: fedapay.fedapayPayoutsAvailable()
-        ? null
-        : fedapay.fedapayPayoutUnavailableReason(),
+      unavailableReason: celtisCanPayout ? null : railPayoutUnavailableReason(celtisRail),
     });
 
     // Les opérateurs PawaPay savent faire les deux (c'est vérifié par
@@ -1253,7 +1360,11 @@ app.get('/api/providers', async (req, res) => {
     }
 
     items.sort((a, b) => a.label.localeCompare(b.label));
-    res.json({ total: items.length, source: items.length ? 'pawapay_active_conf+fedapay' : 'unavailable', providers: items });
+    res.json({
+      total: items.length,
+      source: items.length ? `pawapay_active_conf+${resolveRail('CELTIS BJ')}` : 'unavailable',
+      providers: items,
+    });
   } catch (err) {
     console.error('Error /api/providers', err);
     res.status(500).json({ error: 'providers_failed', details: String(err) });

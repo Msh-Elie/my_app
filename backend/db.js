@@ -22,6 +22,24 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATABASE_URL = process.env.DATABASE_URL || '';
 export const driver = DATABASE_URL ? 'postgres' : 'sqlite';
 
+/// Fige le mode TLS demandé dans la chaîne de connexion.
+///
+/// `pg` traite aujourd'hui `sslmode=require` comme `verify-full`, mais
+/// prévient que sa prochaine version majeure adoptera la sémantique de libpq,
+/// où `require` chiffre sans vérifier l'identité du serveur. Écrire
+/// `verify-full` explicitement conserve la garantie actuelle le jour de la
+/// montée de version, et fait taire l'avertissement au démarrage.
+export function pinSslMode(connectionString, { verify }) {
+  try {
+    const url = new URL(connectionString);
+    url.searchParams.set('sslmode', verify ? 'verify-full' : 'require');
+    return url.toString();
+  } catch {
+    // Chaîne non analysable : on la transmet telle quelle, `pg` dira pourquoi.
+    return connectionString;
+  }
+}
+
 let pool = null; // PostgreSQL
 let sqlite = null; // better-sqlite3
 
@@ -42,7 +60,7 @@ if (driver === 'postgres') {
   }
 
   pool = new pg.Pool({
-    connectionString: DATABASE_URL,
+    connectionString: pinSslMode(DATABASE_URL, { verify: !skipTlsVerify }),
     // Les bases gérées (Neon, Supabase, Render) imposent TLS, avec un
     // certificat émis par une autorité publique — donc présente dans le
     // magasin de Node. La vérification complète fonctionne et doit rester
