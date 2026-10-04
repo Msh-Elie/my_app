@@ -62,3 +62,8 @@ backend/recipients.db-shm
 backend/recipients.db-wal
 .neon
 .env.local
+
+# Signature de production Android — ne doit jamais entrer dans le depot.
+android/key.properties
+android/*.p12
+android/*.jks
