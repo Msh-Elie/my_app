@@ -12,6 +12,7 @@ import 'monthly_summary.dart';
 import 'operator_picker.dart';
 import 'operators.dart';
 import 'recent_recipients.dart';
+import 'recent_routes.dart';
 import 'theme.dart';
 import 'ui_kit.dart';
 
@@ -429,6 +430,9 @@ MonthlyStats monthlyStats = MonthlyStats.empty;
 // Derniers beneficiaires servis, proposes a l'etape des numeros.
 List<RecentRecipient> recentRecipients = const [];
 
+// Trajets deja empruntes, proposes en raccourci sur la premiere etape.
+List<TransferRoute> knownRoutes = const [];
+
 String? lastOperationStatus;
 String? lastOperationTxId;
 String? lastOperationAmount;
@@ -487,6 +491,7 @@ Future<void> _loadLocalActivity() async {
   setState(() {
     monthlyStats = computeMonthlyStats(history);
     recentRecipients = recents;
+    knownRoutes = recentRoutes(history);
   });
 }
 
@@ -1237,6 +1242,27 @@ Widget _buildOperatorStep() {
             icon: Icons.block_rounded,
           ),
         ],
+        const SizedBox(height: AppSpacing.lg),
+
+        // Occupe la place laissee libre sous les deux cartes : d'abord les
+        // trajets deja empruntes, qui sont un vrai raccourci ; a defaut, un
+        // repere pour une premiere utilisation.
+        if (knownRoutes.isNotEmpty)
+          RecentRoutesStrip(
+            routes: knownRoutes,
+            onSelected: (route) {
+              HapticFeedback.selectionClick();
+              setState(() {
+                selectedFrom = route.from;
+                selectedTo = route.to;
+                _rememberOperatorSelection();
+                _resetRecipientLookup();
+              });
+            },
+          )
+        else
+          const HowItWorksCard(),
+
         const SizedBox(height: AppSpacing.lg),
         Row(
           children: [

@@ -3,7 +3,6 @@ import 'package:flutter/services.dart';
 
 import 'api_client.dart';
 import 'register_page.dart';
-import 'server_settings_sheet.dart';
 import 'theme.dart';
 import 'ui_kit.dart';
 
@@ -164,14 +163,6 @@ class _LoginPageState extends State<LoginPage> {
                         ],
                       ),
                     ),
-                  ),
-                  const SizedBox(height: AppSpacing.xs),
-                  TextButton.icon(
-                    onPressed: () => showServerSettingsSheet(context),
-                    icon: Icon(Icons.dns_outlined,
-                        color: context.colors.textMuted, size: 17),
-                    label: Text('Serveur backend',
-                        style: context.text.bodySmall),
                   ),
                 ],
               ),

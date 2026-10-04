@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'api_client.dart';
 import 'help_page.dart';
-import 'server_settings_sheet.dart';
 import 'theme.dart';
 import 'theme_controller.dart';
 import 'ui_kit.dart';
@@ -175,21 +173,6 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
 
           const SizedBox(height: AppSpacing.xl),
-          const SectionLabel('Connexion'),
-          AppCard(
-            padding: EdgeInsets.zero,
-            child: _SettingRow(
-              icon: Icons.dns_outlined,
-              title: 'Serveur backend',
-              subtitle: ApiClient.instance.baseUrl,
-              onTap: () async {
-                await showServerSettingsSheet(context);
-                if (mounted) setState(() {});
-              },
-            ),
-          ),
-
-          const SizedBox(height: AppSpacing.xl),
           const SectionLabel('Assistance'),
           AppCard(
             padding: EdgeInsets.zero,
@@ -347,14 +330,12 @@ class _SettingSwitch extends StatelessWidget {
 class _SettingRow extends StatelessWidget {
   final IconData icon;
   final String title;
-  final String? subtitle;
   final String? trailingLabel;
   final VoidCallback onTap;
 
   const _SettingRow({
     required this.icon,
     required this.title,
-    this.subtitle,
     this.trailingLabel,
     required this.onTap,
   });
@@ -376,23 +357,7 @@ class _SettingRow extends StatelessWidget {
             children: [
               _SettingIcon(icon: icon),
               const SizedBox(width: AppSpacing.md),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title, style: context.text.titleSmall),
-                    if (subtitle != null) ...[
-                      const SizedBox(height: 2),
-                      Text(
-                        subtitle!,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: context.text.bodySmall,
-                      ),
-                    ],
-                  ],
-                ),
-              ),
+              Expanded(child: Text(title, style: context.text.titleSmall)),
               if (trailingLabel != null) ...[
                 Text(trailingLabel!, style: context.text.bodySmall),
                 const SizedBox(width: AppSpacing.sm),

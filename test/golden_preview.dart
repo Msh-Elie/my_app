@@ -17,13 +17,26 @@ import 'package:switchmoney/ui_kit.dart';
 
 /// Historique de démonstration : couvre les opérateurs avec logo, ceux sans,
 /// et les trois statuts — c'est ce qui fait ressortir les défauts de rendu.
-const _demoHistory = '''[
- {"id":"a1b2c3d4-5e6f-7890-abcd-ef1234567890","from":"MTN BJ","to":"MOOV BJ","amount":"25000 XOF","status":"valide","date":"25/09/2026"},
- {"id":"b2c3d4e5-6f70-8901-bcde-f12345678901","from":"MOOV BJ","to":"CELTIS BJ","amount":"5000 XOF","status":"en_cours","date":"25/09/2026"},
- {"id":"c3d4e5f6-7081-9012-cdef-123456789012","from":"ORANGE CI","to":"WAVE CI","amount":"120000 XOF","status":"echec","date":"24/09/2026"},
- {"id":"d4e5f607-8192-0123-def0-234567890123","from":"AIRTEL KE","to":"SAFARICOM KE","amount":"3500 KES","status":"en_cours","date":"24/09/2026"},
- {"id":"e5f60718-9203-1234-ef01-345678901234","from":"YAS TG","to":"MTN GH","amount":"8000 XOF","status":"valide","date":"20/09/2026"}
+/// Historique de démonstration. Les dates sont calculées par rapport au jour
+/// courant : figées, elles sortiraient du mois en cours et la carte
+/// « Envoyé ce mois » disparaîtrait des aperçus au fil du temps.
+String get _demoHistory {
+  final now = DateTime.now();
+  String day(int back) {
+    final d = now.subtract(Duration(days: back));
+    final dd = d.day.toString().padLeft(2, '0');
+    final mm = d.month.toString().padLeft(2, '0');
+    return '$dd/$mm/${d.year}';
+  }
+
+  return '''[
+ {"id":"a1b2c3d4-5e6f-7890-abcd-ef1234567890","from":"MTN BJ","to":"MOOV BJ","amount":"25000 XOF","status":"valide","date":"${day(0)}"},
+ {"id":"b2c3d4e5-6f70-8901-bcde-f12345678901","from":"MOOV BJ","to":"CELTIS BJ","amount":"5000 XOF","status":"en_cours","date":"${day(0)}"},
+ {"id":"c3d4e5f6-7081-9012-cdef-123456789012","from":"ORANGE CI","to":"WAVE CI","amount":"120000 XOF","status":"echec","date":"${day(1)}"},
+ {"id":"d4e5f607-8192-0123-def0-234567890123","from":"AIRTEL KE","to":"SAFARICOM KE","amount":"3500 KES","status":"en_cours","date":"${day(1)}"},
+ {"id":"e5f60718-9203-1234-ef01-345678901234","from":"YAS TG","to":"MTN GH","amount":"8000 XOF","status":"valide","date":"${day(4)}"}
 ]''';
+}
 
 /// Beneficiaires recents de demonstration, pour l'etape des numeros.
 const _demoRecipients = '''[
@@ -90,6 +103,21 @@ void main() {
     testWidgets('historique-$suffix',
         (t) => shoot(t, 'historique-$suffix', const HistoryPage(), theme: theme));
   }
+
+  testWidgets('accueil-premier-usage', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1080, 2160);
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      MaterialApp(theme: AppTheme.light(), home: const HomePage()),
+    );
+    await _settleImages(tester);
+
+    await expectLater(find.byType(MaterialApp),
+        matchesGoldenFile('previews/accueil-premier-usage.png'));
+  });
 
   testWidgets('transfert-montant-clair', (tester) async {
     tester.view.physicalSize = const Size(1080, 2160);

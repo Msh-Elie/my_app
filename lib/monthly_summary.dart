@@ -102,11 +102,9 @@ class MonthlySummaryCard extends StatelessWidget {
       behavior: HitTestBehavior.opaque,
       child: Container(
         width: double.infinity,
-        padding: const EdgeInsets.fromLTRB(
-          AppSpacing.lg,
-          AppSpacing.lg,
-          AppSpacing.lg,
-          AppSpacing.lg,
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg,
+          vertical: AppSpacing.md,
         ),
         decoration: BoxDecoration(
           gradient: const LinearGradient(
@@ -143,8 +141,9 @@ class MonthlySummaryCard extends StatelessWidget {
                             '$noBreakSpace${stats.currency}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: context.text.headlineMedium?.copyWith(
+                    style: context.text.headlineSmall?.copyWith(
                       color: Colors.white,
+                      fontSize: 25,
                       fontFeatures: kTabularFigures,
                     ),
                   ),
@@ -163,8 +162,8 @@ class MonthlySummaryCard extends StatelessWidget {
               ),
             ),
             Container(
-              width: 44,
-              height: 44,
+              width: 40,
+              height: 40,
               decoration: BoxDecoration(
                 color: Colors.white.withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(AppRadius.md),
