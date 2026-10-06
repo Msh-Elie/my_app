@@ -14,6 +14,7 @@ import 'operators.dart';
 import 'recent_recipients.dart';
 import 'recent_routes.dart';
 import 'theme.dart';
+import 'transfer_result.dart';
 import 'ui_kit.dart';
 
 // normalise une MSISDN PawaPay en supprimant le zéro national
@@ -441,7 +442,8 @@ String? lastOperationMessage;
 String? lastOperationDate;
 String? lastOperationFrom;
 String? lastOperationTo;
-String? lastOperationReceiver;
+String? lastOperationReceiverName;
+String? lastOperationReceiverPhone;
 /// Lien de paiement à ouvrir quand l'opérateur exige une validation sur
 /// une page externe (cas des rails hors PawaPay).
 String? lastOperationCheckoutUrl;
@@ -721,10 +723,12 @@ void _captureOperationResult({
   lastOperationDate = HistoryStorage.formatDisplayDate(DateTime.now());
   lastOperationFrom = selectedFrom;
   lastOperationTo = selectedTo;
-  final receiverPhonePreview = _formatPhonePreview(selectedTo, receiveController.text);
-  lastOperationReceiver = recipientNameResolved
-      ? '$resolvedRecipientDisplayName • $receiverPhonePreview'
-      : receiverPhonePreview;
+  // Nom et numero restent separes : assembles en une seule chaine, le numero
+  // se coupait au milieu a l'affichage.
+  lastOperationReceiverPhone =
+      _formatPhonePreview(selectedTo, receiveController.text);
+  lastOperationReceiverName =
+      recipientNameResolved ? resolvedRecipientDisplayName : null;
   lastOperationCheckoutUrl = checkoutUrl;
 }
 
@@ -785,7 +789,8 @@ void _resetTransferFlow() {
     lastOperationDate = null;
     lastOperationFrom = null;
     lastOperationTo = null;
-    lastOperationReceiver = null;
+    lastOperationReceiverName = null;
+    lastOperationReceiverPhone = null;
     lastOperationCheckoutUrl = null;
   });
 }
@@ -1751,167 +1756,26 @@ Widget _buildConfirmationStep() {
 // ---- Étape 4 : résultat --------------------------------------------------
 
 Widget _buildResultStep() {
-  final c = context.colors;
-  final status = lastOperationStatus ?? 'en_cours';
-  final isSuccess = status == 'valide';
-  final isFailure = status == 'echec';
-
-  final tone = isSuccess
-      ? Tone.success
-      : isFailure
-          ? Tone.danger
-          : Tone.warning;
-  final statusLabel = isSuccess
-      ? 'Transfert validé'
-      : isFailure
-          ? 'Transfert échoué'
-          : 'Transfert en cours';
-  final icon = isSuccess
-      ? Icons.check_rounded
-      : isFailure
-          ? Icons.close_rounded
-          : Icons.schedule_rounded;
-
-  return SingleChildScrollView(
-    key: const ValueKey('result'),
-    padding: const EdgeInsets.fromLTRB(
-      AppSpacing.lg,
-      AppSpacing.xl,
-      AppSpacing.lg,
-      AppSpacing.lg,
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Center(
-          child: TweenAnimationBuilder<double>(
-            tween: Tween(begin: 0, end: 1),
-            duration: const Duration(milliseconds: 520),
-            curve: Curves.easeOutBack,
-            builder: (context, value, child) =>
-                Transform.scale(scale: 0.7 + (value * 0.3), child: child),
-            // Le succès se dessine (anneau puis coche) ; l'échec et l'attente
-            // restent sobres — on ne met pas en scène une mauvaise nouvelle.
-            child: isSuccess
-                ? AnimatedCheck(
-                    size: 76,
-                    color: tone.foreground(context),
-                    background: tone.background(context),
-                  )
-                : Container(
-                    width: 76,
-                    height: 76,
-                    decoration: BoxDecoration(
-                      color: tone.background(context),
-                      shape: BoxShape.circle,
-                    ),
-                    child: isFailure
-                        ? Icon(icon, size: 38, color: tone.foreground(context))
-                        : Center(
-                            child: SizedBox(
-                              width: 26,
-                              height: 26,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2.6,
-                                color: tone.foreground(context),
-                              ),
-                            ),
-                          ),
-                  ),
-          ),
-        ),
-        const SizedBox(height: AppSpacing.lg),
-        Text(statusLabel, textAlign: TextAlign.center, style: context.text.headlineSmall),
-        const SizedBox(height: AppSpacing.xs),
-        Text(
-          lastOperationMessage ?? 'Votre opération a été enregistrée.',
-          textAlign: TextAlign.center,
-          style: context.text.bodyMedium,
-        ),
-        const SizedBox(height: AppSpacing.xl),
-        AppCard(
-          child: Column(
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text('Montant', style: context.text.titleSmall),
-                  ),
-                  Text(
-                    formatAmountLabel('${lastOperationAmount ?? '-'} ${lastOperationCurrency ?? ''}'.trim()),
-                    style: context.text.titleLarge?.copyWith(
-                      fontFeatures: kTabularFigures,
-                    ),
-                  ),
-                ],
-              ),
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
-                child: Divider(height: 1, color: c.border),
-              ),
-              DetailRow(
-                label: 'Bénéficiaire',
-                value: lastOperationReceiver ?? '-',
-                allowWrap: true,
-              ),
-              DetailRow(
-                label: 'Trajet',
-                value: '${lastOperationFrom ?? '-'} → ${lastOperationTo ?? '-'}',
-                allowWrap: true,
-              ),
-              DetailRow(label: 'Date', value: lastOperationDate ?? '-'),
-              DetailRow(
-                label: 'Référence',
-                value: lastOperationTxId ?? '-',
-                allowWrap: true,
-              ),
-            ],
-          ),
-        ),
-        // Certains opérateurs (hors réseau PawaPay) exigent que le client
-        // valide son paiement sur une page dédiée : on lui donne le lien.
-        if (lastOperationCheckoutUrl != null) ...[
-          const SizedBox(height: AppSpacing.md),
-          AppCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.open_in_new_rounded, size: 18, color: c.brandText),
-                    const SizedBox(width: AppSpacing.sm),
-                    Expanded(
-                      child: Text('Validation à finaliser',
-                          style: context.text.titleSmall),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: AppSpacing.xs),
-                Text(
-                  'Ouvrez ce lien pour confirmer le paiement auprès de votre '
-                  'opérateur, puis revenez dans l\'application.',
-                  style: context.text.bodySmall,
-                ),
-                const SizedBox(height: AppSpacing.md),
-                SelectableText(
-                  lastOperationCheckoutUrl!,
-                  style: context.text.bodySmall?.copyWith(color: c.brandText),
-                ),
-                const SizedBox(height: AppSpacing.md),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    Clipboard.setData(
-                        ClipboardData(text: lastOperationCheckoutUrl!));
-                    showAppSnack(context, 'Lien copié', tone: Tone.success);
-                  },
-                  icon: const Icon(Icons.copy_rounded, size: 17),
-                  label: const Text('Copier le lien'),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ],
+  return TransferResultView(
+    onViewHistory: () {
+      HapticFeedback.selectionClick();
+      setState(() {
+        selectedTab = 1;
+        tabController.animateTo(1);
+      });
+    },
+    result: TransferResult(
+      status: lastOperationStatus ?? 'en_cours',
+      txId: lastOperationTxId,
+      amount: lastOperationAmount,
+      currency: lastOperationCurrency,
+      message: lastOperationMessage,
+      date: lastOperationDate,
+      from: lastOperationFrom,
+      to: lastOperationTo,
+      receiverName: lastOperationReceiverName,
+      receiverPhone: lastOperationReceiverPhone,
+      checkoutUrl: lastOperationCheckoutUrl,
     ),
   );
 }

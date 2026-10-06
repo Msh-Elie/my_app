@@ -13,6 +13,7 @@ import 'package:switchmoney/login_page.dart';
 import 'package:switchmoney/menu_page.dart';
 import 'package:switchmoney/settings_page.dart';
 import 'package:switchmoney/theme.dart';
+import 'package:switchmoney/transfer_result.dart';
 import 'package:switchmoney/ui_kit.dart';
 
 /// Historique de démonstration : couvre les opérateurs avec logo, ceux sans,
@@ -150,6 +151,64 @@ void main() {
     await expectLater(find.byType(MaterialApp),
         matchesGoldenFile('previews/transfert-numeros-clair.png'));
   });
+
+  for (final entry in {
+    'valide': const TransferResult(
+      status: 'valide',
+      txId: 'a1b2c3d4-5e6f-7890-abcd-ef1234567890',
+      amount: '25000',
+      currency: 'XOF',
+      message: 'Le transfert a été confirmé par l\'opérateur.',
+      date: '06/10/2026',
+      from: 'MTN BJ',
+      to: 'MOOV BJ',
+      receiverName: 'AWA Koffi',
+      receiverPhone: '+229 01 95 00 00 42',
+    ),
+    'en-cours': const TransferResult(
+      status: 'en_cours',
+      txId: 'b2c3d4e5-6f70-8901-bcde-f12345678901',
+      amount: '5000',
+      currency: 'XOF',
+      message: 'Dépôt initié — confirmation de l\'opérateur en cours…',
+      date: '06/10/2026',
+      from: 'MOOV BJ',
+      to: 'MTN BJ',
+      receiverPhone: '+229 01 66 00 00 75',
+    ),
+    'echec': const TransferResult(
+      status: 'echec',
+      txId: 'c3d4e5f6-7081-9012-cdef-123456789012',
+      amount: '120000',
+      currency: 'XOF',
+      message: 'Le transfert a échoué. Aucun montant ne sera prélevé.',
+      date: '05/10/2026',
+      from: 'ORANGE CI',
+      to: 'WAVE CI',
+      receiverPhone: '+225 07 01 20 00 00',
+    ),
+  }.entries) {
+    testWidgets('resultat-${entry.key}', (tester) async {
+      tester.view.physicalSize = const Size(1080, 2160);
+      tester.view.devicePixelRatio = 3.0;
+      addTearDown(tester.view.reset);
+
+      await tester.pumpWidget(MaterialApp(
+        theme: AppTheme.light(),
+        home: Scaffold(body: SafeArea(
+          child: TransferResultView(
+            result: entry.value,
+            onViewHistory: () {},
+          ))),
+      ));
+      await _settleImages(tester);
+      // Laisse la coche finir de se tracer.
+      await tester.pump(const Duration(milliseconds: 1100));
+
+      await expectLater(find.byType(MaterialApp),
+          matchesGoldenFile('previews/resultat-${entry.key}.png'));
+    });
+  }
 
   testWidgets('transfert-confirmation-clair', (tester) async {
     await _pumpTransferToStep(tester, AppTheme.light(), step: 3);
